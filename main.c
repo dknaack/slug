@@ -1,7 +1,10 @@
+#define GLFW_INCLUDE_NONE
 #include <stdio.h>
 #include <stdlib.h>
-#define GL_SILENCE_DEPRECATION
 #include <GLFW/glfw3.h>
+
+#define GLAD_GL_IMPLEMENTATION
+#include "glad.h"
 
 typedef struct {
 	char *at;
@@ -42,7 +45,15 @@ int main(void)
         return -1;
     }
 
-    glfwMakeContextCurrent(window);
+	glfwMakeContextCurrent(window);
+
+	int version = gladLoadGL(glfwGetProcAddress);
+	if (version == 0) {
+		return -1;
+	}
+
+	printf("Loaded OpenGL %d.%d\n", GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version));
+
     while (!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT);
 
