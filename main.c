@@ -30,20 +30,25 @@ static str read_file(char *path)
 
 int main(void)
 {
-	str file = read_file("fonts/OpenSans-Regular.ttf");
-	if (!file.at) {
+	reader r = {0};
+	r.input = read_file("fonts/OpenSans-Regular.ttf");
+	if (!r.input.at) {
 		return -1;
 	}
 
-    if (!glfwInit()) {
+	char c = 'A';
+
+	if (!glfwInit()) {
 		return -1;
 	}
 
-    GLFWwindow *window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
-    if (!window) {
-        glfwTerminate();
-        return -1;
-    }
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	GLFWwindow *window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
+	if (!window) {
+		return -1;
+	}
 
 	glfwMakeContextCurrent(window);
 
