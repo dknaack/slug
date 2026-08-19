@@ -28,7 +28,22 @@ typedef enum {
 	OTF_Y_IS_SAME      = 0x20,
 	OTF_OVERLAP_SIMPLE = 0x40,
 	OTF_RESERVED       = 0x80,
-} otf_glyf_flag;
+} otf_simple_glyph_flags;
+
+typedef enum {
+	OTF_ARG_1_AND_2_ARE_WORDS     = (1 <<  0),
+	OTF_ARGS_ARE_XY_VALUES        = (1 <<  1),
+	OTF_ROUND_XY_TO_GRID          = (1 <<  2),
+	OTF_WE_HAVE_A_SCALE           = (1 <<  3),
+	OTF_MORE_COMPONENTS           = (1 <<  5),
+	OTF_WE_HAVE_AN_X_AND_Y_SCALE  = (1 <<  6),
+	OTF_WE_HAVE_A_TWO_BY_TWO      = (1 <<  7),
+	OTF_WE_HAVE_INSTRUCTIONS      = (1 <<  8),
+	OTF_USE_MY_METRICS            = (1 <<  9),
+	OTF_OVERLAP_COMPOUND          = (1 << 10),
+	OTF_SCALED_COMPONENT_OFFSET   = (1 << 11),
+	OTF_UNSCALED_COMPONENT_OFFSET = (1 << 12),
+} otf_composite_glyph_flags;
 
 typedef struct {
 	uint16_t units_per_em;
@@ -118,36 +133,36 @@ static uint16_t read_u8(reader *r)
 	return result;
 }
 
-static uint32_t get_glyph_index(reader *r, uint32_t codepoint)
+static uint32_t get_glyph_index(reader r, uint32_t codepoint)
 {
-	assert(r->pos == 0);
+	assert(r.pos == 0);
 
 	uint32_t result = 0;
-	uint16_t _version = read_u16(r);
-	uint16_t num_tables = read_u16(r);
+	uint16_t _version = read_u16(&r);
+	uint16_t num_tables = read_u16(&r);
 
 	for (uint16_t i = 0; i < num_tables; i++) {
-		uint16_t _platform_id = read_u16(r);
-		uint16_t _encoding_id = read_u16(r);
-		uint32_t subtable_offset = read_u32(r);
+		uint16_t _platform_id = read_u16(&r);
+		uint16_t _encoding_id = read_u16(&r);
+		uint32_t subtable_offset = read_u32(&r);
 
-		size_t orig_pos = r->pos;
-		r->pos = subtable_offset;
+		size_t orig_pos = r.pos;
+		r.pos = subtable_offset;
 
-		uint16_t format = read_u16(r);
-		uint16_t length = read_u16(r);
-		uint16_t language = read_u16(r);
-		uint16_t segment_count_twice = read_u16(r);
-		uint16_t _search_range = read_u16(r);
-		uint16_t _entry_selector = read_u16(r);
-		uint16_t _range_shift = read_u16(r);
+		uint16_t format = read_u16(&r);
+		uint16_t length = read_u16(&r);
+		uint16_t language = read_u16(&r);
+		uint16_t segment_count_twice = read_u16(&r);
+		uint16_t _search_range = read_u16(&r);
+		uint16_t _entry_selector = read_u16(&r);
+		uint16_t _range_shift = read_u16(&r);
 
 		int found_segment = 0;
 		int32_t segment_index = 0;
 		uint16_t segment_end = 0;
 		uint16_t segment_count = segment_count_twice / 2;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t end_code = read_u16(r);
+			uint16_t end_code = read_u16(&r);
 			if (!found_segment && codepoint <= end_code) {
 				segment_index = i;
 				segment_end = end_code;
@@ -155,11 +170,11 @@ static uint32_t get_glyph_index(reader *r, uint32_t codepoint)
 			}
 		}
 
-		r->pos += 2; // padding byte
+		r.pos += 2; // padding byte
 
 		uint16_t segment_start = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t start_code = read_u16(r);
+			uint16_t start_code = read_u16(&r);
 			if (i == segment_index) {
 				segment_start = start_code;
 				found_segment = (start_code <= codepoint);
@@ -168,7 +183,7 @@ static uint32_t get_glyph_index(reader *r, uint32_t codepoint)
 
 		int16_t segment_delta = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			int16_t id_delta = (int16_t)read_u16(r);
+			int16_t id_delta = (int16_t)read_u16(&r);
 			if (i == segment_index) {
 				segment_delta = id_delta;
 			}
@@ -177,10 +192,10 @@ static uint32_t get_glyph_index(reader *r, uint32_t codepoint)
 		uint16_t segment_range_offset = 0;
 		size_t address = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t id_range_offset = read_u16(r);
+			uint16_t id_range_offset = read_u16(&r);
 			if (i == segment_index) {
 				segment_range_offset = id_range_offset;
-				address = r->pos;
+				address = r.pos;
 			}
 		}
 
@@ -188,28 +203,28 @@ static uint32_t get_glyph_index(reader *r, uint32_t codepoint)
 			if (segment_range_offset == 0) {
 				result = (codepoint + segment_delta) & 0xFFFF;
 			} else {
-				r->pos = address + segment_range_offset + 2 * (codepoint - segment_start);
-				result = read_u16(r);
+				r.pos = address + segment_range_offset + 2 * (codepoint - segment_start);
+				result = read_u16(&r);
 			}
 		}
 
-		r->pos = orig_pos;
+		r.pos = orig_pos;
 	}
 
 	return result;
 }
 
-static uint32_t get_glyph_offset(reader *r, uint32_t glyph_index, int loca_format)
+static uint32_t get_glyph_offset(reader r, uint32_t glyph_index, int loca_format)
 {
 	uint32_t offset = 0;
 
 	if (loca_format == 0) {
-		r->pos += sizeof(uint16_t) * glyph_index;
-		uint16_t offset_divided_by_two = read_u16(r);
+		r.pos = sizeof(uint16_t) * glyph_index;
+		uint16_t offset_divided_by_two = read_u16(&r);
 		offset = offset_divided_by_two * 2;
 	} else {
-		r->pos += sizeof(uint32_t) * glyph_index;
-		offset = read_u32(r);
+		r.pos = sizeof(uint32_t) * glyph_index;
+		offset = read_u32(&r);
 	}
 
 	return offset;
@@ -337,20 +352,65 @@ static glyph convert_simple_glyph(reader *r)
 	return result;
 }
 
-static void convert_glyph(reader *r)
+static glyph convert_glyph(reader *r)
 {
+	glyph result = {0};
+
 	int16_t contour_count = read_u16(r);
 	if (contour_count >= 0) {
 		r->pos = 0;
-		convert_simple_glyph(r);
+		result = convert_simple_glyph(r);
 	} else {
 		int16_t _x_min = read_u16(r);
 		int16_t _y_min = read_u16(r);
 		int16_t _x_max = read_u16(r);
 		int16_t _y_max = read_u16(r);
 
-		assert(!"TODO");
+		uint32_t component_index = 0;
+		uint16_t flags = 0;
+		do {
+			printf("Component %d\n", component_index++);
+
+			flags = read_u16(r);
+			uint16_t glyph_index = read_u16(r);
+			printf("flags=%x, glyph_index=%d\n", flags, glyph_index);
+
+			uint16_t arg1, arg2;
+			if (flags & OTF_ARG_1_AND_2_ARE_WORDS) {
+				arg1 = read_u16(r);
+				arg2 = read_u16(r);
+			} else {
+				arg1 = read_u8(r);
+				arg2 = read_u8(r);
+			}
+			printf("arg1=%d, arg2=%d\n", arg1, arg2);
+
+			int16_t transform[2][2] = {{1, 0}, {0, 1}};
+			if (flags & OTF_WE_HAVE_A_SCALE) {
+				printf("scale\n");
+				uint16_t scale = read_u16(r);
+				transform[0][0] = scale;
+				transform[1][1] = scale;
+			} else if (flags & OTF_WE_HAVE_AN_X_AND_Y_SCALE) {
+				printf("xy\n");
+				transform[0][0] = read_u16(r);
+				transform[1][1] = read_u16(r);
+			} else if (flags & OTF_WE_HAVE_A_TWO_BY_TWO) {
+				printf("2x2\n");
+				transform[0][0] = read_u16(r);
+				transform[0][1] = read_u16(r);
+				transform[1][0] = read_u16(r);
+				transform[1][1] = read_u16(r);
+			}
+		} while (flags & OTF_MORE_COMPONENTS);
+
+		if (flags & OTF_WE_HAVE_INSTRUCTIONS) {
+			uint16_t num_instr = read_u16(r);
+			r->pos += num_instr;
+		}
 	}
+
+	return result;
 }
 
 /* Returns the format for the `loca` table. The format is 0 for 16-bit offsets
@@ -483,14 +543,24 @@ int main(void)
 		reader head = {tables[OTF_TABLE_HEAD]};
 		reader maxp = {tables[OTF_TABLE_MAXP]};
 
-		uint32_t index = get_glyph_index(&cmap, c);
+#if 0
+		uint32_t glyph_count = get_glyph_count(&maxp);
+		for (uint32_t i = 0; i < glyph_count; i++) {
+			uint32_t offset = get_glyph_offset(loca, i, font.index_to_loc_format);
+			glyf.pos = offset;
+			printf("num_contours[%d] = %d\n", i, read_u16(&glyf));
+		}
+#endif
+
+		uint32_t index = get_glyph_index(cmap, 'A');
 		font = read_head(&head);
-		uint32_t offset = get_glyph_offset(&loca, index, font.index_to_loc_format);
+		uint32_t offset = get_glyph_offset(loca, index, font.index_to_loc_format);
 
 		glyf.input.at += offset;
 		glyf.input.length -= offset;
+		glyf.pos = 0;
 
-		glyph = convert_simple_glyph(&glyf);
+		glyph = convert_glyph(&glyf);
 	}
 
 	str vertex_shader_source = read_file("vert.glsl");
