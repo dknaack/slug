@@ -20,14 +20,14 @@ typedef enum {
 } otf_table_type;
 
 typedef enum {
-	OTF_GLYF_ON_CURVE_POINT = 0x01,
-	OTF_GLYF_X_SHORT_VECTOR = 0x02,
-	OTF_GLYF_Y_SHORT_VECTOR = 0x04,
-	OTF_GLYF_REPEAT_FLAG    = 0x08,
-	OTF_GLYF_X_IS_SAME      = 0x10,
-	OTF_GLYF_Y_IS_SAME      = 0x20,
-	OTF_GLYF_OVERLAP_SIMPLE = 0x40,
-	OTF_GLYF_RESERVED       = 0x80,
+	OTF_ON_CURVE_POINT = 0x01,
+	OTF_X_SHORT_VECTOR = 0x02,
+	OTF_Y_SHORT_VECTOR = 0x04,
+	OTF_REPEAT_FLAG    = 0x08,
+	OTF_X_IS_SAME      = 0x10,
+	OTF_Y_IS_SAME      = 0x20,
+	OTF_OVERLAP_SIMPLE = 0x40,
+	OTF_RESERVED       = 0x80,
 } otf_glyf_flag;
 
 typedef struct {
@@ -246,7 +246,7 @@ static glyph convert_simple_glyph(reader *r)
 			repeat_count -= 1;
 		} else {
 			flags[i] = read_u8(r);
-			if (flags[i] & OTF_GLYF_REPEAT_FLAG) {
+			if (flags[i] & OTF_REPEAT_FLAG) {
 				repeat_count = read_u8(r);
 			}
 		}
@@ -258,14 +258,14 @@ static glyph convert_simple_glyph(reader *r)
 	int16_t x = 0;
 	for (uint16_t i = 0; i < point_count; i++) {
 		uint8_t flag = flags[i];
-		if (flag & OTF_GLYF_X_SHORT_VECTOR) {
+		if (flag & OTF_X_SHORT_VECTOR) {
 			uint8_t dx = read_u8(r);
-			if (flag & OTF_GLYF_X_IS_SAME) {
+			if (flag & OTF_X_IS_SAME) {
 				x += dx;
 			} else {
 				x -= dx;
 			}
-		} else if (!(flag & OTF_GLYF_X_IS_SAME)) {
+		} else if (!(flag & OTF_X_IS_SAME)) {
 			x += (int16_t)read_u16(r);
 		}
 
@@ -277,15 +277,15 @@ static glyph convert_simple_glyph(reader *r)
 	for (uint16_t i = 0; i < point_count; i++) {
 		uint8_t flag = flags[i];
 
-		if (flag & OTF_GLYF_Y_SHORT_VECTOR) {
+		if (flag & OTF_Y_SHORT_VECTOR) {
 			uint8_t dy = read_u8(r);
 
-			if (flag & OTF_GLYF_Y_IS_SAME) {
+			if (flag & OTF_Y_IS_SAME) {
 				y += dy;
 			} else {
 				y -= dy;
 			}
-		} else if (!(flag & OTF_GLYF_Y_IS_SAME)) {
+		} else if (!(flag & OTF_Y_IS_SAME)) {
 			y += (int16_t)read_u16(r);
 		}
 
@@ -304,14 +304,14 @@ static glyph convert_simple_glyph(reader *r)
 		point prev_point = points[contour_end];
 		uint8_t prev_flag = flags[contour_end];
 
-		if (prev_flag & OTF_GLYF_ON_CURVE_POINT) {
+		if (prev_flag & OTF_ON_CURVE_POINT) {
 			result.points[result.point_count++] = prev_point;
 		}
 
 		for (uint16_t i = contour_start; i <= contour_end; i++) {
 			point curr_point = points[i];
 			uint8_t curr_flag = flags[i];
-			if ((curr_flag & OTF_GLYF_ON_CURVE_POINT) == (prev_flag & OTF_GLYF_ON_CURVE_POINT)) {
+			if ((curr_flag & OTF_ON_CURVE_POINT) == (prev_flag & OTF_ON_CURVE_POINT)) {
 				point midpoint = {0};
 				midpoint.x = (prev_point.x + curr_point.x) / 2;
 				midpoint.y = (prev_point.y + curr_point.y) / 2;
@@ -319,7 +319,7 @@ static glyph convert_simple_glyph(reader *r)
 				result.points[result.point_count++] = midpoint;
 			}
 
-			if (!(i == contour_end && (curr_flag & OTF_GLYF_ON_CURVE_POINT))) {
+			if (!(i == contour_end && (curr_flag & OTF_ON_CURVE_POINT))) {
 				assert(result.point_count < 2 * point_count);
 				result.points[result.point_count++] = curr_point;
 			}
@@ -432,7 +432,7 @@ int main(void)
 		return -1;
 	}
 
-	char c = 'A';
+	char c = 'd';
 	glyph glyph = {0};
 	otf_head font = {0};
 	{
@@ -483,7 +483,7 @@ int main(void)
 		reader head = {tables[OTF_TABLE_HEAD]};
 		reader maxp = {tables[OTF_TABLE_MAXP]};
 
-		uint32_t index = get_glyph_index(&cmap, 'S');
+		uint32_t index = get_glyph_index(&cmap, c);
 		font = read_head(&head);
 		uint32_t offset = get_glyph_offset(&loca, index, font.index_to_loc_format);
 
@@ -512,22 +512,6 @@ int main(void)
 		return -1;
 	}
 
-	float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
-	float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
-
-	float points[] = {
-		0.5, 0.0,
-		1.0, 0.0,
-		1.0, 0.5,
-		1.0, 1.0,
-		0.5, 1.0,
-		0.0, 1.0,
-		0.0, 0.5,
-		0.0, 0.0,
-	};
-
-	int contours[] = { 8 };
-
 	GLuint point_texture;
 	glGenTextures(1, &point_texture);
 	glActiveTexture(GL_TEXTURE0);
@@ -535,13 +519,6 @@ int main(void)
 	glTexImage1D(GL_TEXTURE_1D, 0, GL_RG32F, glyph.point_count, 0, GL_RG, GL_FLOAT, glyph.points);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-	printf("%d, %d\n", glyph.x_min, glyph.x_max);
-	printf("%d, %d\n", glyph.y_min, glyph.y_max);
-	for (int i = 0; i < glyph.point_count; i++) {
-		point p = glyph.points[i];
-		printf("(%f, %f)\n", p.x, p.y);
-	}
 
 	GLuint contour_texture;
 	glGenTextures(1, &contour_texture);
@@ -551,14 +528,6 @@ int main(void)
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-	glUseProgram(program);
-	glUniform1f(glGetUniformLocation(program, "x_min"), 0);
-	glUniform1f(glGetUniformLocation(program, "y_min"), 0);
-	glUniform1f(glGetUniformLocation(program, "x_max"), width);
-	glUniform1f(glGetUniformLocation(program, "y_max"), height);
-	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
-	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
-
 	GLuint vertex_array = 0;
 	glGenVertexArrays(1, &vertex_array);
 	glBindVertexArray(vertex_array);
@@ -566,6 +535,24 @@ int main(void)
 	while (!glfwWindowShouldClose(window)) {
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+		int viewport_width, viewport_height;
+		glfwGetFramebufferSize(window, &viewport_width, &viewport_height);
+		glViewport(0, 0, viewport_width, viewport_height);
+
+		float size = 52.f;
+		float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
+		float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
+		width *= size / viewport_width;
+		height *= size / viewport_height;
+
+		glUseProgram(program);
+		glUniform1f(glGetUniformLocation(program, "x_min"), 0);
+		glUniform1f(glGetUniformLocation(program, "y_min"), 0);
+		glUniform1f(glGetUniformLocation(program, "x_max"), width);
+		glUniform1f(glGetUniformLocation(program, "y_max"), height);
+		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
