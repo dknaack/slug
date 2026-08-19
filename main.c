@@ -463,18 +463,19 @@ int main(void)
 		return -1;
 	}
 
-	printf("Loaded OpenGL %d.%d\n", GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version));
-
 	const char *vertex_shader_source =
 		"#version 410 core\n"
+		"uniform float x_min;\n"
+		"uniform float y_min;\n"
+		"uniform float x_max;\n"
+		"uniform float y_max;\n"
 		"void main()\n"
 		"{\n"
-		"    const vec4 vertices[4] = vec4[4](\n"
-		"        vec4(-1.0, -1.0, 0.0, 1.0),\n"
-		"        vec4(+1.0, -1.0, 0.0, 1.0),\n"
-		"        vec4(-1.0, +1.0, 0.0, 1.0),\n"
-		"        vec4(+1.0, +1.0, 0.0, 1.0)\n"
-		"    );\n"
+		"    vec4 vertices[4];\n"
+		"    vertices[0] = vec4(x_min, y_min, 0.0, 1.0);\n"
+		"    vertices[1] = vec4(x_max, y_min, 0.0, 1.0);\n"
+		"    vertices[2] = vec4(x_min, y_max, 0.0, 1.0);\n"
+		"    vertices[3] = vec4(x_max, y_max, 0.0, 1.0);\n"
 		"\n"
 		"    gl_Position = vertices[gl_VertexID];\n"
 		"}\n";
@@ -484,6 +485,8 @@ int main(void)
 
 	const char *fragment_shader_source =
 		"#version 410 core\n"
+		"uniform sampler2D point_data;\n"
+		"uniform sampler2D contour_data;\n"
 		"out vec4 frag_color;\n"
 		"void main()\n"
 		"{\n"
@@ -507,7 +510,14 @@ int main(void)
 		return -1;
 	}
 
+	float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
+	float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
+
 	glUseProgram(program);
+	glUniform1f(glGetUniformLocation(program, "x_min"), 0);
+	glUniform1f(glGetUniformLocation(program, "y_min"), 0);
+	glUniform1f(glGetUniformLocation(program, "x_max"), width);
+	glUniform1f(glGetUniformLocation(program, "y_max"), height);
 
 	GLuint vertex_array = 0;
 	glGenVertexArrays(1, &vertex_array);
