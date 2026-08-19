@@ -36,13 +36,14 @@ typedef struct {
 } otf_head;
 
 typedef struct {
-	int16_t x, y;
+	float x, y;
 } point;
 
 typedef struct {
 	point *points;
 	uint32_t *contours;
 	uint32_t contour_count;
+	uint32_t point_count;
 	int32_t x_min, y_min;
 	int32_t x_max, y_max;
 } glyph;
@@ -67,7 +68,8 @@ static str read_file(char *path)
 		result.length = ftell(file);
 		fseek(file, 0, SEEK_SET);
 
-		result.at = malloc(result.length);
+		result.at = malloc(result.length + 1);
+		result.at[result.length] = '\0';
 		fread(result.at, 1, result.length, file);
 	}
 
@@ -93,10 +95,10 @@ static uint32_t read_u32(reader *r)
 {
 	uint8_t *p = (uint8_t *)r->input.at;
 	uint32_t result = 0;
-	result |= p[r->pos++] << 24;
-	result |= p[r->pos++] << 16;
-	result |= p[r->pos++] <<  8;
-	result |= p[r->pos++] <<  0;
+	result |= (uint32_t)p[r->pos++] << 24;
+	result |= (uint32_t)p[r->pos++] << 16;
+	result |= (uint32_t)p[r->pos++] <<  8;
+	result |= (uint32_t)p[r->pos++] <<  0;
 	return result;
 }
 
@@ -104,8 +106,8 @@ static uint16_t read_u16(reader *r)
 {
 	uint8_t *p = (uint8_t *)r->input.at;
 	uint16_t result = 0;
-	result |= p[r->pos++] << 8;
-	result |= p[r->pos++] << 0;
+	result |= (uint16_t)p[r->pos++] << 8;
+	result |= (uint16_t)p[r->pos++] << 0;
 	return result;
 }
 
@@ -217,10 +219,10 @@ static glyph convert_simple_glyph(reader *r)
 {
 	glyph result = {0};
 	int16_t contour_count = read_u16(r);
-	result.x_min = read_u16(r);
-	result.y_min = read_u16(r);
-	result.x_max = read_u16(r);
-	result.y_max = read_u16(r);
+	result.x_min = (int16_t)read_u16(r);
+	result.y_min = (int16_t)read_u16(r);
+	result.x_max = (int16_t)read_u16(r);
+	result.y_max = (int16_t)read_u16(r);
 
 	assert(contour_count > 0);
 
@@ -267,7 +269,7 @@ static glyph convert_simple_glyph(reader *r)
 			x += (int16_t)read_u16(r);
 		}
 
-		points[i].x = x;
+		points[i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
 	}
 
 	// Decode y-coordinates
@@ -287,16 +289,16 @@ static glyph convert_simple_glyph(reader *r)
 			y += (int16_t)read_u16(r);
 		}
 
-		points[i].y = y;
+		points[i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
 	}
 
 	// Insert midpoints
 	result.points = calloc(2 * point_count, sizeof(*result.points));
 	result.contours = calloc(contour_count, sizeof(*result.contours));
 	result.contour_count = contour_count;
+	result.point_count = 0;
 
 	uint32_t contour_start = 0;
-	uint32_t out = 0;
 	for (uint16_t j = 0; j < contour_count; j++) {
 		uint16_t contour_end = end_points[j];
 		point prev_point = points[contour_end];
@@ -309,19 +311,20 @@ static glyph convert_simple_glyph(reader *r)
 				midpoint.x = (prev_point.x + curr_point.x) / 2;
 				midpoint.y = (prev_point.y + curr_point.y) / 2;
 
-				result.points[out++] = midpoint;
+				result.points[result.point_count++] = midpoint;
 			}
 
-			result.points[out++] = curr_point;
+			assert(result.point_count < 2 * point_count);
+			result.points[result.point_count++] = curr_point;
 			prev_point = curr_point;
 			prev_flag = curr_flag;
 		}
 
-		contour_end = contour_start + 1;
-		result.contours[j] = out;
+		contour_start = contour_end + 1;
+		result.contours[j] = result.point_count;
 	}
 
-	result.points = realloc(result.points, out * sizeof(*result.points));
+	result.points = realloc(result.points, result.point_count * sizeof(*result.points));
 	return result;
 }
 
@@ -375,8 +378,45 @@ static uint16_t get_glyph_count(reader *r)
 	return num_glyphs;
 }
 
+static GLuint create_shader(const char *src, GLenum type)
+{
+	GLuint shader = glCreateShader(type);
+	glShaderSource(shader, 1, &src, NULL);
+	glCompileShader(shader);
+
+	int success = 0;
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+	if (!success) {
+		char info_log[1024] = {0};
+		glGetShaderInfoLog(shader, sizeof(info_log) - 1, NULL, info_log);
+		printf("Failed to compile shader: %s\n", info_log);
+		return 0;
+	}
+
+	return shader;
+}
+
 int main(void)
 {
+	if (!glfwInit()) {
+		return -1;
+	}
+
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	GLFWwindow *window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
+	if (!window) {
+		return -1;
+	}
+
+	glfwMakeContextCurrent(window);
+
+	int version = gladLoadGL(glfwGetProcAddress);
+	if (version == 0) {
+		return -1;
+	}
+
 	reader r = {0};
 	r.input = read_file("fonts/OpenSans-Regular.ttf");
 	if (!r.input.at) {
@@ -434,7 +474,7 @@ int main(void)
 		reader head = {tables[OTF_TABLE_HEAD]};
 		reader maxp = {tables[OTF_TABLE_MAXP]};
 
-		uint32_t index = get_glyph_index(&cmap, 'A');
+		uint32_t index = get_glyph_index(&cmap, 'S');
 		font = read_head(&head);
 		uint32_t offset = get_glyph_offset(&loca, index, font.index_to_loc_format);
 
@@ -444,57 +484,10 @@ int main(void)
 		glyph = convert_simple_glyph(&glyf);
 	}
 
-	if (!glfwInit()) {
-		return -1;
-	}
-
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-	GLFWwindow *window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
-	if (!window) {
-		return -1;
-	}
-
-	glfwMakeContextCurrent(window);
-
-	int version = gladLoadGL(glfwGetProcAddress);
-	if (version == 0) {
-		return -1;
-	}
-
-	const char *vertex_shader_source =
-		"#version 410 core\n"
-		"uniform float x_min;\n"
-		"uniform float y_min;\n"
-		"uniform float x_max;\n"
-		"uniform float y_max;\n"
-		"void main()\n"
-		"{\n"
-		"    vec4 vertices[4];\n"
-		"    vertices[0] = vec4(x_min, y_min, 0.0, 1.0);\n"
-		"    vertices[1] = vec4(x_max, y_min, 0.0, 1.0);\n"
-		"    vertices[2] = vec4(x_min, y_max, 0.0, 1.0);\n"
-		"    vertices[3] = vec4(x_max, y_max, 0.0, 1.0);\n"
-		"\n"
-		"    gl_Position = vertices[gl_VertexID];\n"
-		"}\n";
-	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-	glShaderSource(vertex_shader, 1, &vertex_shader_source, NULL);
-	glCompileShader(vertex_shader);
-
-	const char *fragment_shader_source =
-		"#version 410 core\n"
-		"uniform sampler2D point_data;\n"
-		"uniform sampler2D contour_data;\n"
-		"out vec4 frag_color;\n"
-		"void main()\n"
-		"{\n"
-		"	frag_color = vec4(1.0);\n"
-		"}\n";
-	GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(fragment_shader, 1, &fragment_shader_source, NULL);
-	glCompileShader(fragment_shader);
+	str vertex_shader_source = read_file("vert.glsl");
+	str fragment_shader_source = read_file("frag.glsl");
+	GLuint vertex_shader = create_shader(vertex_shader_source.at, GL_VERTEX_SHADER);
+	GLuint fragment_shader = create_shader(fragment_shader_source.at, GL_FRAGMENT_SHADER);
 
 	GLuint program = glCreateProgram();
 	glAttachShader(program, vertex_shader);
@@ -513,11 +506,49 @@ int main(void)
 	float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
 	float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
 
+	float points[] = {
+		0.5, 0.0,
+		1.0, 0.0,
+		1.0, 0.5,
+		1.0, 1.0,
+		0.5, 1.0,
+		0.0, 1.0,
+		0.0, 0.5,
+		0.0, 0.0,
+	};
+
+	int contours[] = { 8 };
+
+	GLuint point_texture;
+	glGenTextures(1, &point_texture);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_1D, point_texture);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_RG32F, glyph.point_count, 0, GL_RG, GL_FLOAT, glyph.points);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+	printf("%d, %d\n", glyph.x_min, glyph.x_max);
+	printf("%d, %d\n", glyph.y_min, glyph.y_max);
+	for (int i = 0; i < glyph.point_count; i++) {
+		point p = glyph.points[i];
+		printf("(%f, %f)\n", p.x, p.y);
+	}
+
+	GLuint contour_texture;
+	glGenTextures(1, &contour_texture);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_1D, contour_texture);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_R32I, glyph.contour_count, 0, GL_RED_INTEGER, GL_INT, glyph.contours);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
 	glUseProgram(program);
 	glUniform1f(glGetUniformLocation(program, "x_min"), 0);
 	glUniform1f(glGetUniformLocation(program, "y_min"), 0);
 	glUniform1f(glGetUniformLocation(program, "x_max"), width);
 	glUniform1f(glGetUniformLocation(program, "y_max"), height);
+	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
 	GLuint vertex_array = 0;
 	glGenVertexArrays(1, &vertex_array);
