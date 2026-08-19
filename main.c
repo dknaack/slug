@@ -303,6 +303,11 @@ static glyph convert_simple_glyph(reader *r)
 		uint16_t contour_end = end_points[j];
 		point prev_point = points[contour_end];
 		uint8_t prev_flag = flags[contour_end];
+
+		if (prev_flag & OTF_GLYF_ON_CURVE_POINT) {
+			result.points[result.point_count++] = prev_point;
+		}
+
 		for (uint16_t i = contour_start; i <= contour_end; i++) {
 			point curr_point = points[i];
 			uint8_t curr_flag = flags[i];
@@ -314,8 +319,11 @@ static glyph convert_simple_glyph(reader *r)
 				result.points[result.point_count++] = midpoint;
 			}
 
-			assert(result.point_count < 2 * point_count);
-			result.points[result.point_count++] = curr_point;
+			if (!(i == contour_end && (curr_flag & OTF_GLYF_ON_CURVE_POINT))) {
+				assert(result.point_count < 2 * point_count);
+				result.points[result.point_count++] = curr_point;
+			}
+
 			prev_point = curr_point;
 			prev_flag = curr_flag;
 		}
@@ -324,6 +332,7 @@ static glyph convert_simple_glyph(reader *r)
 		result.contours[j] = result.point_count;
 	}
 
+	assert(result.point_count % 2 == 0);
 	result.points = realloc(result.points, result.point_count * sizeof(*result.points));
 	return result;
 }
