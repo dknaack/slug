@@ -9,6 +9,21 @@
 
 #define TAG(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d))
 
+#define read_i64(r) ((int64_t)read_u64(r))
+#define read_i32(r) ((int32_t)read_u32(r))
+#define read_i16(r) ((int16_t)read_u16(r))
+#define read_i8(r) ((int8_t)read_u8(r))
+
+typedef struct {
+	char *at;
+	size_t length;
+} str;
+
+typedef struct {
+	str input;
+	size_t pos;
+} reader;
+
 typedef enum {
 	OTF_TABLE_NONE,
 	OTF_TABLE_CMAP,
@@ -18,6 +33,12 @@ typedef enum {
 	OTF_TABLE_MAXP,
 	OTF_TABLE_COUNT
 } otf_table_type;
+
+typedef struct {
+	float xx, xy;
+	float yx, yy;
+	float dx, dy;
+} otf_transform;
 
 typedef enum {
 	OTF_ON_CURVE_POINT = 0x01,
@@ -48,7 +69,10 @@ typedef enum {
 typedef struct {
 	uint16_t units_per_em;
 	uint16_t index_to_loc_format;
-} otf_head;
+	uint32_t glyph_count;
+
+	str tables[OTF_TABLE_COUNT];
+} otf_font;
 
 typedef struct {
 	float x, y;
@@ -62,16 +86,6 @@ typedef struct {
 	int32_t x_min, y_min;
 	int32_t x_max, y_max;
 } glyph;
-
-typedef struct {
-	char *at;
-	size_t length;
-} str;
-
-typedef struct {
-	str input;
-	size_t pos;
-} reader;
 
 static str read_file(char *path)
 {
@@ -91,7 +105,7 @@ static str read_file(char *path)
 	return result;
 }
 
-static uint32_t read_u64(reader *r)
+static uint64_t read_u64(reader *r)
 {
 	uint8_t *p = (uint8_t *)r->input.at;
 	uint64_t result = 0;
@@ -133,36 +147,42 @@ static uint16_t read_u8(reader *r)
 	return result;
 }
 
-static uint32_t get_glyph_index(reader r, uint32_t codepoint)
+static float fixed_2_14(int16_t value)
 {
-	assert(r.pos == 0);
+	return (float)value / 16384.0f;
+}
 
+static uint32_t get_glyph_index(str cmap_table, uint32_t codepoint)
+{
 	uint32_t result = 0;
-	uint16_t _version = read_u16(&r);
-	uint16_t num_tables = read_u16(&r);
+	reader cmap = {cmap_table};
+
+	uint32_t offset = 0;
+	uint16_t _version = read_u16(&cmap);
+	uint16_t num_tables = read_u16(&cmap);
 
 	for (uint16_t i = 0; i < num_tables; i++) {
-		uint16_t _platform_id = read_u16(&r);
-		uint16_t _encoding_id = read_u16(&r);
-		uint32_t subtable_offset = read_u32(&r);
+		uint16_t _platform_id = read_u16(&cmap);
+		uint16_t _encoding_id = read_u16(&cmap);
+		uint32_t subtable_offset = read_u32(&cmap);
 
-		size_t orig_pos = r.pos;
-		r.pos = subtable_offset;
+		size_t orig_pos = cmap.pos;
+		cmap.pos = subtable_offset;
 
-		uint16_t format = read_u16(&r);
-		uint16_t length = read_u16(&r);
-		uint16_t language = read_u16(&r);
-		uint16_t segment_count_twice = read_u16(&r);
-		uint16_t _search_range = read_u16(&r);
-		uint16_t _entry_selector = read_u16(&r);
-		uint16_t _range_shift = read_u16(&r);
+		uint16_t format = read_u16(&cmap);
+		uint16_t length = read_u16(&cmap);
+		uint16_t language = read_u16(&cmap);
+		uint16_t segment_count_twice = read_u16(&cmap);
+		uint16_t _search_range = read_u16(&cmap);
+		uint16_t _entry_selector = read_u16(&cmap);
+		uint16_t _range_shift = read_u16(&cmap);
 
 		int found_segment = 0;
 		int32_t segment_index = 0;
 		uint16_t segment_end = 0;
 		uint16_t segment_count = segment_count_twice / 2;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t end_code = read_u16(&r);
+			uint16_t end_code = read_u16(&cmap);
 			if (!found_segment && codepoint <= end_code) {
 				segment_index = i;
 				segment_end = end_code;
@@ -170,11 +190,11 @@ static uint32_t get_glyph_index(reader r, uint32_t codepoint)
 			}
 		}
 
-		r.pos += 2; // padding byte
+		cmap.pos += 2; // padding byte
 
 		uint16_t segment_start = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t start_code = read_u16(&r);
+			uint16_t start_code = read_u16(&cmap);
 			if (i == segment_index) {
 				segment_start = start_code;
 				found_segment = (start_code <= codepoint);
@@ -183,7 +203,7 @@ static uint32_t get_glyph_index(reader r, uint32_t codepoint)
 
 		int16_t segment_delta = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			int16_t id_delta = (int16_t)read_u16(&r);
+			int16_t id_delta = read_i16(&cmap);
 			if (i == segment_index) {
 				segment_delta = id_delta;
 			}
@@ -192,10 +212,10 @@ static uint32_t get_glyph_index(reader r, uint32_t codepoint)
 		uint16_t segment_range_offset = 0;
 		size_t address = 0;
 		for (uint16_t i = 0; i < segment_count; i++) {
-			uint16_t id_range_offset = read_u16(&r);
+			uint16_t id_range_offset = read_u16(&cmap);
 			if (i == segment_index) {
 				segment_range_offset = id_range_offset;
-				address = r.pos;
+				address = cmap.pos;
 			}
 		}
 
@@ -203,248 +223,240 @@ static uint32_t get_glyph_index(reader r, uint32_t codepoint)
 			if (segment_range_offset == 0) {
 				result = (codepoint + segment_delta) & 0xFFFF;
 			} else {
-				r.pos = address + segment_range_offset + 2 * (codepoint - segment_start);
-				result = read_u16(&r);
+				cmap.pos = address + segment_range_offset + 2 * (codepoint - segment_start);
+				result = read_u16(&cmap);
 			}
 		}
 
-		r.pos = orig_pos;
+		cmap.pos = orig_pos;
 	}
 
 	return result;
 }
 
-static uint32_t get_glyph_offset(reader r, uint32_t glyph_index, int loca_format)
+static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 {
-	uint32_t offset = 0;
+	glyph result = {0};
 
-	if (loca_format == 0) {
-		r.pos = sizeof(uint16_t) * glyph_index;
-		uint16_t offset_divided_by_two = read_u16(&r);
+	// Get the glyph offset
+	reader loca;
+	loca.input = font->tables[OTF_TABLE_LOCA];
+	loca.pos = glyph_index;
+
+	uint32_t offset = 0;
+	if (font->index_to_loc_format == 0) {
+		loca.pos = sizeof(uint16_t) * glyph_index;
+		uint16_t offset_divided_by_two = read_u16(&loca);
 		offset = offset_divided_by_two * 2;
 	} else {
-		r.pos = sizeof(uint32_t) * glyph_index;
-		offset = read_u32(&r);
+		loca.pos = sizeof(uint32_t) * glyph_index;
+		offset = read_u32(&loca);
 	}
 
-	return offset;
-}
+	// Convert the glyph
+	reader glyf = {0};
+	glyf.input = font->tables[OTF_TABLE_GLYF];
+	glyf.pos = offset;
 
-static glyph convert_simple_glyph(reader *r)
-{
-	glyph result = {0};
-	int16_t contour_count = read_u16(r);
-	result.x_min = (int16_t)read_u16(r);
-	result.y_min = (int16_t)read_u16(r);
-	result.x_max = (int16_t)read_u16(r);
-	result.y_max = (int16_t)read_u16(r);
-
-	assert(contour_count > 0);
-
-	uint16_t *end_points = calloc(contour_count, sizeof(*end_points));
-	for (uint16_t i = 0; i < contour_count; i++) {
-		end_points[i] = read_u16(r);
-	}
-
-	uint16_t point_count = end_points[contour_count - 1] + 1;
-
-	// Ignore any instructions
-	uint16_t instruction_length = read_u16(r);
-	r->pos += instruction_length;
-
-	// Decode the flags
-	uint8_t repeat_count = 0;
-	uint8_t *flags = calloc(point_count, sizeof(*flags));
-	for (uint16_t i = 0; i < point_count; i++) {
-		if (repeat_count > 0) {
-			flags[i] = flags[i - 1];
-			repeat_count -= 1;
-		} else {
-			flags[i] = read_u8(r);
-			if (flags[i] & OTF_REPEAT_FLAG) {
-				repeat_count = read_u8(r);
-			}
-		}
-	}
-
-	point *points = calloc(point_count, sizeof(*points));
-
-	// Decode x-coordinates
-	int16_t x = 0;
-	for (uint16_t i = 0; i < point_count; i++) {
-		uint8_t flag = flags[i];
-		if (flag & OTF_X_SHORT_VECTOR) {
-			uint8_t dx = read_u8(r);
-			if (flag & OTF_X_IS_SAME) {
-				x += dx;
-			} else {
-				x -= dx;
-			}
-		} else if (!(flag & OTF_X_IS_SAME)) {
-			x += (int16_t)read_u16(r);
-		}
-
-		points[i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
-	}
-
-	// Decode y-coordinates
-	int16_t y = 0;
-	for (uint16_t i = 0; i < point_count; i++) {
-		uint8_t flag = flags[i];
-
-		if (flag & OTF_Y_SHORT_VECTOR) {
-			uint8_t dy = read_u8(r);
-
-			if (flag & OTF_Y_IS_SAME) {
-				y += dy;
-			} else {
-				y -= dy;
-			}
-		} else if (!(flag & OTF_Y_IS_SAME)) {
-			y += (int16_t)read_u16(r);
-		}
-
-		points[i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
-	}
-
-	// Insert midpoints
-	result.points = calloc(2 * point_count, sizeof(*result.points));
-	result.contours = calloc(contour_count, sizeof(*result.contours));
-	result.contour_count = contour_count;
-	result.point_count = 0;
-
-	uint32_t contour_start = 0;
-	for (uint16_t j = 0; j < contour_count; j++) {
-		uint16_t contour_end = end_points[j];
-		point prev_point = points[contour_end];
-		uint8_t prev_flag = flags[contour_end];
-
-		if (prev_flag & OTF_ON_CURVE_POINT) {
-			result.points[result.point_count++] = prev_point;
-		}
-
-		for (uint16_t i = contour_start; i <= contour_end; i++) {
-			point curr_point = points[i];
-			uint8_t curr_flag = flags[i];
-			if ((curr_flag & OTF_ON_CURVE_POINT) == (prev_flag & OTF_ON_CURVE_POINT)) {
-				point midpoint = {0};
-				midpoint.x = (prev_point.x + curr_point.x) / 2;
-				midpoint.y = (prev_point.y + curr_point.y) / 2;
-
-				result.points[result.point_count++] = midpoint;
-			}
-
-			if (!(i == contour_end && (curr_flag & OTF_ON_CURVE_POINT))) {
-				assert(result.point_count < 2 * point_count);
-				result.points[result.point_count++] = curr_point;
-			}
-
-			prev_point = curr_point;
-			prev_flag = curr_flag;
-		}
-
-		contour_start = contour_end + 1;
-		result.contours[j] = result.point_count;
-	}
-
-	assert(result.point_count % 2 == 0);
-	result.points = realloc(result.points, result.point_count * sizeof(*result.points));
-	return result;
-}
-
-static glyph convert_glyph(reader *r)
-{
-	glyph result = {0};
-
-	int16_t contour_count = read_u16(r);
+	int16_t contour_count = read_u16(&glyf);
 	if (contour_count >= 0) {
-		r->pos = 0;
-		result = convert_simple_glyph(r);
-	} else {
-		int16_t _x_min = read_u16(r);
-		int16_t _y_min = read_u16(r);
-		int16_t _x_max = read_u16(r);
-		int16_t _y_max = read_u16(r);
+		// Simple glyph
+		result.x_min = read_i16(&glyf);
+		result.y_min = read_i16(&glyf);
+		result.x_max = read_i16(&glyf);
+		result.y_max = read_i16(&glyf);
 
-		uint32_t component_index = 0;
+		uint16_t *end_points = calloc(contour_count, sizeof(*end_points));
+		for (uint16_t i = 0; i < contour_count; i++) {
+			end_points[i] = read_u16(&glyf);
+		}
+
+		uint16_t point_count = end_points[contour_count - 1] + 1;
+
+		// Ignore any instructions
+		uint16_t instruction_length = read_u16(&glyf);
+		glyf.pos += instruction_length;
+
+		// Decode the flags
+		uint8_t repeat_count = 0;
+		uint8_t *flags = calloc(point_count, sizeof(*flags));
+		for (uint16_t i = 0; i < point_count; i++) {
+			if (repeat_count > 0) {
+				flags[i] = flags[i - 1];
+				repeat_count -= 1;
+			} else {
+				flags[i] = read_u8(&glyf);
+				if (flags[i] & OTF_REPEAT_FLAG) {
+					repeat_count = read_u8(&glyf);
+				}
+			}
+		}
+
+		point *points = calloc(point_count, sizeof(*points));
+
+		// Decode x-coordinates
+		int16_t x = 0;
+		for (uint16_t i = 0; i < point_count; i++) {
+			uint8_t flag = flags[i];
+			if (flag & OTF_X_SHORT_VECTOR) {
+				uint8_t dx = read_u8(&glyf);
+				if (flag & OTF_X_IS_SAME) {
+					x += dx;
+				} else {
+					x -= dx;
+				}
+			} else if (!(flag & OTF_X_IS_SAME)) {
+				x += read_i16(&glyf);
+			}
+
+			points[i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
+		}
+
+		// Decode y-coordinates
+		int16_t y = 0;
+		for (uint16_t i = 0; i < point_count; i++) {
+			uint8_t flag = flags[i];
+
+			if (flag & OTF_Y_SHORT_VECTOR) {
+				uint8_t dy = read_u8(&glyf);
+
+				if (flag & OTF_Y_IS_SAME) {
+					y += dy;
+				} else {
+					y -= dy;
+				}
+			} else if (!(flag & OTF_Y_IS_SAME)) {
+				y += read_i16(&glyf);
+			}
+
+			points[i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
+		}
+
+		// Insert midpoints
+		result.points = calloc(2 * point_count, sizeof(*result.points));
+		result.contours = calloc(contour_count, sizeof(*result.contours));
+		result.contour_count = contour_count;
+		result.point_count = 0;
+
+		uint32_t contour_start = 0;
+		for (uint16_t j = 0; j < contour_count; j++) {
+			uint16_t contour_end = end_points[j];
+			point prev_point = points[contour_end];
+			uint8_t prev_flag = flags[contour_end];
+
+			// Ensure that first point is always on the curve
+			if (prev_flag & OTF_ON_CURVE_POINT) {
+				result.points[result.point_count++] = prev_point;
+			}
+
+			for (uint16_t i = contour_start; i <= contour_end; i++) {
+				point curr_point = points[i];
+				uint8_t curr_flag = flags[i];
+				if ((curr_flag & OTF_ON_CURVE_POINT) == (prev_flag & OTF_ON_CURVE_POINT)) {
+					point midpoint = {0};
+					midpoint.x = (prev_point.x + curr_point.x) / 2;
+					midpoint.y = (prev_point.y + curr_point.y) / 2;
+					result.points[result.point_count++] = midpoint;
+				}
+
+				if (!(i == contour_end && (curr_flag & OTF_ON_CURVE_POINT))) {
+					assert(result.point_count < 2 * point_count);
+					result.points[result.point_count++] = curr_point;
+				}
+
+				prev_point = curr_point;
+				prev_flag = curr_flag;
+			}
+
+			contour_start = contour_end + 1;
+			result.contours[j] = result.point_count;
+		}
+
+		assert(result.point_count % 2 == 0);
+		result.points = realloc(result.points, result.point_count * sizeof(*result.points));
+	} else {
+		// Composite glyph
+		result.x_min = read_i16(&glyf);
+		result.y_min = read_i16(&glyf);
+		result.x_max = read_i16(&glyf);
+		result.y_max = read_i16(&glyf);
+
 		uint16_t flags = 0;
 		do {
-			printf("Component %d\n", component_index++);
+			flags = read_u16(&glyf);
+			uint16_t component_index = read_u16(&glyf);
+			glyph component = convert_glyph(font, component_index);
 
-			flags = read_u16(r);
-			uint16_t glyph_index = read_u16(r);
-			printf("flags=%x, glyph_index=%d\n", flags, glyph_index);
-
-			uint16_t arg1, arg2;
+			int16_t arg1, arg2;
 			if (flags & OTF_ARG_1_AND_2_ARE_WORDS) {
-				arg1 = read_u16(r);
-				arg2 = read_u16(r);
+				arg1 = read_i16(&glyf);
+				arg2 = read_i16(&glyf);
 			} else {
-				arg1 = read_u8(r);
-				arg2 = read_u8(r);
+				arg1 = read_i8(&glyf);
+				arg2 = read_i8(&glyf);
 			}
-			printf("arg1=%d, arg2=%d\n", arg1, arg2);
 
-			int16_t transform[2][2] = {{1, 0}, {0, 1}};
+			otf_transform t = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
 			if (flags & OTF_WE_HAVE_A_SCALE) {
-				printf("scale\n");
-				uint16_t scale = read_u16(r);
-				transform[0][0] = scale;
-				transform[1][1] = scale;
+				t.xx = t.yy = fixed_2_14(read_i16(&glyf));
 			} else if (flags & OTF_WE_HAVE_AN_X_AND_Y_SCALE) {
-				printf("xy\n");
-				transform[0][0] = read_u16(r);
-				transform[1][1] = read_u16(r);
+				t.xx = fixed_2_14(read_i16(&glyf));
+				t.yy = fixed_2_14(read_i16(&glyf));
 			} else if (flags & OTF_WE_HAVE_A_TWO_BY_TWO) {
-				printf("2x2\n");
-				transform[0][0] = read_u16(r);
-				transform[0][1] = read_u16(r);
-				transform[1][0] = read_u16(r);
-				transform[1][1] = read_u16(r);
+				t.xx = fixed_2_14(read_i16(&glyf));
+				t.xy = fixed_2_14(read_i16(&glyf));
+				t.yx = fixed_2_14(read_i16(&glyf));
+				t.yy = fixed_2_14(read_i16(&glyf));
 			}
-		} while (flags & OTF_MORE_COMPONENTS);
 
-		if (flags & OTF_WE_HAVE_INSTRUCTIONS) {
-			uint16_t num_instr = read_u16(r);
-			r->pos += num_instr;
-		}
+			float dx = 0;
+			float dy = 0;
+			if (flags & OTF_ARGS_ARE_XY_VALUES) {
+				t.dx = arg1;
+				t.dy = arg2;
+			} else {
+				point p = result.points[arg1];
+				point q = component.points[arg2];
+
+				float px = p.x * (result.x_max - result.x_min) + result.x_min;
+				float py = p.y * (result.y_max - result.y_min) + result.y_min;
+
+				float qx = q.x * (component.x_max - component.x_min) + component.x_min;
+				float qy = q.y * (component.y_max - component.y_min) + component.y_min;
+
+				t.dx = px - (t.xx * qx + t.xy * qy);
+				t.dy = py - (t.yx * qx + t.yy * qy);
+			}
+
+			// Append the glyph
+			uint32_t point_count = result.point_count + component.point_count;
+			uint32_t contour_count = result.contour_count + component.contour_count;
+			result.points = realloc(result.points, point_count * sizeof(*result.points));
+			result.contours = realloc(result.contours, contour_count * sizeof(*result.contours));
+
+			uint32_t point_offset = result.point_count;
+			uint32_t contour_offset = result.contour_count;
+			for (uint32_t i = 0; i < component.point_count; i++) {
+				float x = component.points[i].x * (component.x_max - component.x_min) + component.x_min;
+				float y = component.points[i].y * (component.y_max - component.y_min) + component.y_min;
+
+				x = t.xx * x + t.xy * y + t.dx;
+				y = t.yx * x + t.yy * y + t.dy;
+
+				result.points[point_offset + i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
+				result.points[point_offset + i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
+			}
+
+			for (uint32_t i = 0; i < component.contour_count; i++) {
+				result.contours[contour_offset + i] = point_offset + component.contours[i];
+			}
+
+			result.point_count += component.point_count;
+			result.contour_count += component.contour_count;
+		} while (flags & OTF_MORE_COMPONENTS);
 	}
 
 	return result;
-}
-
-/* Returns the format for the `loca` table. The format is 0 for 16-bit offsets
- * and 1 for 32-bit offsets. 16-bit offsets must be multiplied by two. */
-static otf_head read_head(reader *r)
-{
-	otf_head result = {0};
-	uint16_t _major_version = read_u16(r);
-	uint16_t _minor_version = read_u16(r);
-	uint32_t _font_revision = read_u32(r);
-	uint32_t _checksum_adjustment = read_u32(r);
-	uint32_t _magic_number = read_u32(r);
-	uint16_t _flags = read_u16(r);
-	result.units_per_em = read_u16(r);
-	int64_t _created = read_u64(r);
-	int64_t _modified = read_u64(r);
-	int16_t _x_min = read_u16(r);
-	int16_t _y_min = read_u16(r);
-	int16_t _x_max = read_u16(r);
-	int16_t _y_max = read_u16(r);
-	uint16_t _mac_style = read_u16(r);
-	uint16_t _lowest_rec_ppem = read_u16(r);
-	int16_t _font_direction_hint = read_u16(r);
-	result.index_to_loc_format = read_u16(r);
-	int16_t _glyph_data_format = read_u16(r);
-
-	return result;
-}
-
-static uint16_t get_glyph_count(reader *r)
-{
-	uint32_t _version = read_u32(r);
-	uint32_t num_glyphs = read_u16(r);
-	return num_glyphs;
 }
 
 static GLuint create_shader(const char *src, GLenum type)
@@ -486,23 +498,22 @@ int main(void)
 		return -1;
 	}
 
-	reader r = {0};
-	r.input = read_file("fonts/OpenSans-Regular.ttf");
-	if (!r.input.at) {
-		return -1;
-	}
-
 	char c = 'd';
 	glyph glyph = {0};
-	otf_head font = {0};
+	otf_font font = {0};
 	{
+		reader r = {0};
+		r.input = read_file("fonts/OpenSans-Regular.ttf");
+		if (!r.input.at) {
+			return -1;
+		}
+
 		uint32_t _version = read_u32(&r);
 		uint16_t num_tables = read_u16(&r);
 		uint16_t _search_range = read_u16(&r);
 		uint16_t _entry_selector = read_u16(&r);
 		uint16_t _range_shift = read_u16(&r);
 
-		str tables[OTF_TABLE_COUNT] = {0};
 		for (uint16_t i = 0; i < num_tables; i++) {
 			char *tag_str = r.input.at + r.pos;
 			uint32_t tag = read_u32(&r);
@@ -531,36 +542,44 @@ int main(void)
 			}
 
 			if (tag != 0) {
-				tables[tag] = r.input;
-				tables[tag].at += offset;
-				tables[tag].length = length;
+				font.tables[tag] = r.input;
+				font.tables[tag].at += offset;
+				font.tables[tag].length = length;
 			}
 		}
 
-		reader cmap = {tables[OTF_TABLE_CMAP]};
-		reader loca = {tables[OTF_TABLE_LOCA]};
-		reader glyf = {tables[OTF_TABLE_GLYF]};
-		reader head = {tables[OTF_TABLE_HEAD]};
-		reader maxp = {tables[OTF_TABLE_MAXP]};
-
-#if 0
-		uint32_t glyph_count = get_glyph_count(&maxp);
-		for (uint32_t i = 0; i < glyph_count; i++) {
-			uint32_t offset = get_glyph_offset(loca, i, font.index_to_loc_format);
-			glyf.pos = offset;
-			printf("num_contours[%d] = %d\n", i, read_u16(&glyf));
+		// read the head table
+		{
+			reader head = {font.tables[OTF_TABLE_HEAD]};
+			uint16_t _major_version = read_u16(&head);
+			uint16_t _minor_version = read_u16(&head);
+			uint32_t _font_revision = read_u32(&head);
+			uint32_t _checksum_adjustment = read_u32(&head);
+			uint32_t _magic_number = read_u32(&head);
+			uint16_t _flags = read_u16(&head);
+			font.units_per_em = read_u16(&head);
+			int64_t _created = read_u64(&head);
+			int64_t _modified = read_u64(&head);
+			int16_t _x_min = read_u16(&head);
+			int16_t _y_min = read_u16(&head);
+			int16_t _x_max = read_u16(&head);
+			int16_t _y_max = read_u16(&head);
+			uint16_t _mac_style = read_u16(&head);
+			uint16_t _lowest_rec_ppem = read_u16(&head);
+			int16_t _font_direction_hint = read_u16(&head);
+			font.index_to_loc_format = read_u16(&head);
+			int16_t _glyph_data_format = read_u16(&head);
 		}
-#endif
 
-		uint32_t index = get_glyph_index(cmap, 'A');
-		font = read_head(&head);
-		uint32_t offset = get_glyph_offset(loca, index, font.index_to_loc_format);
+		// read the maxp table
+		{
+			reader maxp = {font.tables[OTF_TABLE_MAXP]};
+			uint32_t _version = read_u32(&maxp);
+			font.glyph_count = read_u16(&maxp);
+		}
 
-		glyf.input.at += offset;
-		glyf.input.length -= offset;
-		glyf.pos = 0;
-
-		glyph = convert_glyph(&glyf);
+		uint32_t index = get_glyph_index(font.tables[OTF_TABLE_CMAP], 'A');
+		glyph = convert_glyph(&font, 324);
 	}
 
 	str vertex_shader_source = read_file("vert.glsl");
