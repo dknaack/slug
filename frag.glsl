@@ -1,31 +1,28 @@
 #version 410 core
 
-in vec2 pos;
+in vec2 frag_texcoord;
+flat in int frag_contour_count;
+flat in int frag_contour_offset;
+flat in int frag_point_offset;
 
 uniform samplerBuffer point_data;
 uniform isamplerBuffer contour_data;
-uniform int point_offset;
-uniform int contour_offset;
 
-out vec4 frag_color;
+out vec4 color;
 
 void main()
 {
 	const float epsilon = 0.0001;
 
+	vec2 pos = frag_texcoord;
 	float coverage = 0.0;
-	frag_color = vec4(1.0);
-
 	vec2 pixels_per_em = vec2(1.0 / fwidth(pos.x), 1.0 / fwidth(pos.y));
-
-	int num_crossings = 0;
-	int contour_count = 2;
 	int contour_start = 0;
-	for (int i = 0; i < contour_count; i++) {
-		int contour_end = texelFetch(contour_data, contour_offset + i).r;
+	for (int i = 0; i < frag_contour_count; i++) {
+		int contour_end = texelFetch(contour_data, frag_contour_offset + i).r;
 		int point_count = contour_end - contour_start;
 		for (int j = 0; j < point_count; j += 2) {
-			int base = point_offset + contour_start;
+			int base = frag_point_offset + contour_start;
 			vec2 p0 = texelFetch(point_data, base + (j + 0)).rg;
 			vec2 p1 = texelFetch(point_data, base + (j + 1) % point_count).rg;
 			vec2 p2 = texelFetch(point_data, base + (j + 2) % point_count).rg;
@@ -68,9 +65,8 @@ void main()
 		contour_start = contour_end;
 	}
 
-	vec4 vcolor = vec4(1.0);
-	//coverage = sqrt(clamp(abs(coverage) * 0.5, 0.0, 1.0));
-	float alpha = coverage * vcolor.w;
-	frag_color = vec4(vcolor.xyz * alpha, alpha);
+	color = vec4(1.0);
+	float alpha = coverage * color.w;
+	color = vec4(color.xyz * alpha, alpha);
 }
 

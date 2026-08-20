@@ -89,6 +89,14 @@ typedef struct {
 	int32_t x_max, y_max;
 } glyph;
 
+typedef struct {
+	float pos[2];
+	float size[2];
+	uint32_t point_offset;
+	uint32_t contour_offset;
+	uint32_t contour_count;
+} glyph_instance;
+
 static str read_file(char *path)
 {
 	str result = {0};
@@ -638,10 +646,8 @@ int main(void)
 	glBindBuffer(GL_TEXTURE_BUFFER, contour_buffer);
 	glBufferData(GL_TEXTURE_BUFFER, contour_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
 	for (uint32_t i = 0; i < font.glyph_count; i++) {
-		glBufferSubData(GL_TEXTURE_BUFFER,
-			offsets[2 * i + 1] * sizeof(uint32_t),
-			glyphs[i].contour_count * sizeof(uint32_t),
-			glyphs[i].contours);
+		glBufferSubData(GL_TEXTURE_BUFFER, offsets[2 * i + 1] * sizeof(uint32_t),
+			glyphs[i].contour_count * sizeof(uint32_t), glyphs[i].contours);
 	}
 
 	GLuint contour_texture;
@@ -649,12 +655,30 @@ int main(void)
 	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
 	glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, contour_buffer);
 
-	GLuint vertex_array = 0;
+	GLuint vertex_array;
 	glGenVertexArrays(1, &vertex_array);
 	glBindVertexArray(vertex_array);
 
-	uint32_t glyph_index = get_glyph_index(&font, 'a');
-	glyph glyph = glyphs[glyph_index];
+	GLuint instance_buffer;
+	glGenBuffers(1, &instance_buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, instance_buffer);
+	glBufferData(GL_ARRAY_BUFFER, 1024 * sizeof(glyph_instance), NULL, GL_DYNAMIC_DRAW);
+
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glyph_instance), (void *)offsetof(glyph_instance, pos));
+	glEnableVertexAttribArray(0);
+	glVertexAttribDivisor(0, 1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(glyph_instance), (void *)offsetof(glyph_instance, size));
+	glEnableVertexAttribArray(1);
+	glVertexAttribDivisor(1, 1);
+	glVertexAttribIPointer(2, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, point_offset));
+	glEnableVertexAttribArray(2);
+	glVertexAttribDivisor(2, 1);
+	glVertexAttribIPointer(3, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, contour_offset));
+	glEnableVertexAttribArray(3);
+	glVertexAttribDivisor(3, 1);
+	glVertexAttribIPointer(4, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, contour_count));
+	glEnableVertexAttribArray(4);
+	glVertexAttribDivisor(4, 1);
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
@@ -668,23 +692,31 @@ int main(void)
 		glViewport(0, 0, viewport_width, viewport_height);
 		glClear(GL_COLOR_BUFFER_BIT);
 
+		uint32_t glyph_index = get_glyph_index(&font, 'A');
+		glyph glyph = glyphs[glyph_index];
 		float size = 1024.f;
 		float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
 		float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
 		width *= size / viewport_width;
 		height *= size / viewport_height;
 
+		glyph_instance instances[] = {
+			{
+				.pos = {-width/2, -height/2},
+				.size = {width, height},
+				.point_offset = offsets[2 * glyph_index + 0],
+				.contour_offset = offsets[2 * glyph_index + 1],
+				.contour_count = glyphs[glyph_index].contour_count,
+			}
+		};
+
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instances), instances);
+
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
 		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
-		glUniform1f(glGetUniformLocation(program, "x_min"), -width/2);
-		glUniform1f(glGetUniformLocation(program, "y_min"), -height/2);
-		glUniform1f(glGetUniformLocation(program, "x_max"), width/2);
-		glUniform1f(glGetUniformLocation(program, "y_max"), height/2);
-		glUniform1i(glGetUniformLocation(program, "point_offset"), offsets[2 * glyph_index + 0]);
-		glUniform1i(glGetUniformLocation(program, "contour_offset"), offsets[2 * glyph_index + 1]);
 
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
