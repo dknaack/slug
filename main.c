@@ -520,9 +520,6 @@ int main(void)
 		uint16_t _range_shift = read_u16(&r);
 
 		for (uint16_t i = 0; i < num_tables; i++) {
-			char *tag_str = r.input.at + r.pos;
-			printf("%.4s\n", tag_str);
-
 			uint32_t tag = read_u32(&r);
 			uint32_t _checksum = read_u32(&r);
 			uint32_t offset = read_u32(&r);
