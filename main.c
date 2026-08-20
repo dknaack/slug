@@ -620,31 +620,37 @@ int main(void)
 	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
 	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
+	GLuint point_buffer;
+	glGenBuffers(1, &point_buffer);
+	glBindBuffer(GL_TEXTURE_BUFFER, point_buffer);
+	glBufferData(GL_TEXTURE_BUFFER, point_count * sizeof(point), NULL, GL_STATIC_DRAW);
+	for (uint32_t i = 0; i < font.glyph_count; i++) {
+		glBufferSubData(GL_TEXTURE_BUFFER,
+			offsets[2 * i] * sizeof(point),
+			glyphs[i].point_count * sizeof(point),
+			glyphs[i].points);
+	}
+
 	GLuint point_texture;
 	glGenTextures(1, &point_texture);
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, point_texture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, 2048, 2048, 0, GL_RG, GL_FLOAT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, point_buffer);
+
+	GLuint contour_buffer;
+	glGenBuffers(1, &contour_buffer);
+	glBindBuffer(GL_TEXTURE_BUFFER, contour_buffer);
+	glBufferData(GL_TEXTURE_BUFFER, contour_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
 	for (uint32_t i = 0; i < font.glyph_count; i++) {
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i, glyphs[i].point_count, 1, GL_RG, GL_FLOAT, glyphs[i].points);
+		glBufferSubData(GL_TEXTURE_BUFFER,
+			offsets[2 * i + 1] * sizeof(uint32_t),
+			glyphs[i].contour_count * sizeof(uint32_t),
+			glyphs[i].contours);
 	}
 
 	GLuint contour_texture;
 	glGenTextures(1, &contour_texture);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, contour_texture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, 2048, 2048, 0, GL_RED_INTEGER, GL_INT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-	for (uint32_t i = 0; i < font.glyph_count; i++) {
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i, glyphs[i].contour_count, 1, GL_RED_INTEGER, GL_INT, glyphs[i].contours);
-	}
+	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, contour_buffer);
 
 	GLuint vertex_array = 0;
 	glGenVertexArrays(1, &vertex_array);
@@ -652,6 +658,12 @@ int main(void)
 
 	uint32_t glyph_index = get_glyph_index(&font, 'a');
 	glyph glyph = glyphs[glyph_index];
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
+
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
 
 	while (!glfwWindowShouldClose(window)) {
 		int viewport_width, viewport_height;
@@ -672,7 +684,8 @@ int main(void)
 		glUniform1f(glGetUniformLocation(program, "y_min"), -height/2);
 		glUniform1f(glGetUniformLocation(program, "x_max"), width/2);
 		glUniform1f(glGetUniformLocation(program, "y_max"), height/2);
-		glUniform1i(glGetUniformLocation(program, "point_offset"), glyph_index);
+		glUniform1i(glGetUniformLocation(program, "point_offset"), offsets[2 * glyph_index + 0]);
+		glUniform1i(glGetUniformLocation(program, "contour_offset"), offsets[2 * glyph_index + 1]);
 
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
