@@ -152,10 +152,10 @@ static float fixed_2_14(int16_t value)
 	return (float)value / 16384.0f;
 }
 
-static uint32_t get_glyph_index(str cmap_table, uint32_t codepoint)
+static uint32_t get_glyph_index(otf_font *font, uint32_t codepoint)
 {
 	uint32_t result = 0;
-	reader cmap = {cmap_table};
+	reader cmap = {font->tables[OTF_TABLE_CMAP]};
 
 	uint32_t offset = 0;
 	uint16_t _version = read_u16(&cmap);
