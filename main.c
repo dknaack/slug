@@ -415,7 +415,7 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 				t.dx = arg1;
 				t.dy = arg2;
 			} else {
-				point p = result.points[arg1];
+				point p = component.points[arg1];
 				point q = component.points[arg2];
 
 				float px = p.x * (result.x_max - result.x_min) + result.x_min;
