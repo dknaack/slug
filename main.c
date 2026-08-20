@@ -8,6 +8,7 @@
 #include "glad.h"
 
 #define TAG(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d))
+#define MAX(a, b) ((a) > (b)? (a) : (b))
 
 #define read_i64(r) ((int64_t)read_u64(r))
 #define read_i32(r) ((int32_t)read_u32(r))
@@ -498,9 +499,11 @@ int main(void)
 		return -1;
 	}
 
-	char c = 'd';
-	glyph glyph = {0};
 	otf_font font = {0};
+	glyph *glyphs = NULL;
+	uint32_t *offsets = NULL;
+	uint32_t point_count = 0;
+	uint32_t contour_count = 0;
 	{
 		reader r = {0};
 		r.input = read_file("fonts/OpenSans-Regular.ttf");
@@ -516,6 +519,8 @@ int main(void)
 
 		for (uint16_t i = 0; i < num_tables; i++) {
 			char *tag_str = r.input.at + r.pos;
+			printf("%.4s\n", tag_str);
+
 			uint32_t tag = read_u32(&r);
 			uint32_t _checksum = read_u32(&r);
 			uint32_t offset = read_u32(&r);
@@ -578,8 +583,15 @@ int main(void)
 			font.glyph_count = read_u16(&maxp);
 		}
 
-		uint32_t index = get_glyph_index(font.tables[OTF_TABLE_CMAP], 'A');
-		glyph = convert_glyph(&font, 324);
+		glyphs = calloc(font.glyph_count, sizeof(*glyphs));
+		offsets = calloc(2 * font.glyph_count, sizeof(*glyphs));
+		for (uint32_t i = 0; i < font.glyph_count; i++) {
+			glyphs[i] = convert_glyph(&font, i);
+			offsets[2 * i + 0] = point_count;
+			offsets[2 * i + 1] = contour_count;
+			point_count += glyphs[i].point_count;
+			contour_count += glyphs[i].contour_count;
+		}
 	}
 
 	str vertex_shader_source = read_file("vert.glsl");
@@ -601,33 +613,48 @@ int main(void)
 		return -1;
 	}
 
+	uint32_t glyph_index = get_glyph_index(&font, 'a');
+	glyph glyph = glyphs[glyph_index];
+	printf("index=%d, contours=%d, points=%d\n", glyph_index, glyph.contour_count, glyph.point_count);
+
+	glUseProgram(program);
+	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
+
 	GLuint point_texture;
 	glGenTextures(1, &point_texture);
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_1D, point_texture);
-	glTexImage1D(GL_TEXTURE_1D, 0, GL_RG32F, glyph.point_count, 0, GL_RG, GL_FLOAT, glyph.points);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_RG32F, MAX(point_count, 1 << 16), 0, GL_RG, GL_FLOAT, NULL);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	for (uint32_t i = 0; i < font.glyph_count; i++) {
+		glTexSubImage1D(GL_TEXTURE_1D, 0, offsets[2 * i], glyphs[i].point_count, GL_RG, GL_FLOAT, glyphs[i].points);
+	}
 
 	GLuint contour_texture;
 	glGenTextures(1, &contour_texture);
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_1D, contour_texture);
-	glTexImage1D(GL_TEXTURE_1D, 0, GL_R32I, glyph.contour_count, 0, GL_RED_INTEGER, GL_INT, glyph.contours);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_R32I, contour_count, 0, GL_RED_INTEGER, GL_INT, NULL);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	for (uint32_t i = 0; i < font.glyph_count; i++) {
+		glTexSubImage1D(GL_TEXTURE_1D, 0, offsets[2 * i + 1], glyphs[i].contour_count, GL_RED_INTEGER, GL_INT, glyphs[i].contours);
+	}
+
+	printf("contour_count=%d\n", contour_count);
+	printf("point_count=%d\n", point_count);
 
 	GLuint vertex_array = 0;
 	glGenVertexArrays(1, &vertex_array);
 	glBindVertexArray(vertex_array);
 
 	while (!glfwWindowShouldClose(window)) {
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
 		int viewport_width, viewport_height;
 		glfwGetFramebufferSize(window, &viewport_width, &viewport_height);
 		glViewport(0, 0, viewport_width, viewport_height);
+		glClear(GL_COLOR_BUFFER_BIT);
 
 		float size = 52.f;
 		float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
@@ -636,12 +663,22 @@ int main(void)
 		height *= size / viewport_height;
 
 		glUseProgram(program);
+		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
+		GLint p = glGetUniformLocation(program, "point_data");
+		GLint c = glGetUniformLocation(program, "contour_data");
+
+		printf("point_data=%d contour_data=%d\n", p, c);
+		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 		glUniform1f(glGetUniformLocation(program, "x_min"), 0);
 		glUniform1f(glGetUniformLocation(program, "y_min"), 0);
 		glUniform1f(glGetUniformLocation(program, "x_max"), width);
 		glUniform1f(glGetUniformLocation(program, "y_max"), height);
-		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
-		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
+		glUniform1i(glGetUniformLocation(program, "point_offset"), offsets[2 * glyph_index + 0]);
+		glUniform1i(glGetUniformLocation(program, "contour_offset"), offsets[2 * glyph_index + 1]);
+
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();

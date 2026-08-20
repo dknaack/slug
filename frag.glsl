@@ -4,6 +4,8 @@ in vec2 pos;
 
 uniform sampler1D point_data;
 uniform isampler1D contour_data;
+uniform int point_offset;
+uniform int contour_offset;
 
 out vec4 frag_color;
 
@@ -20,12 +22,13 @@ void main()
 	int contour_count = 2;
 	int contour_start = 0;
 	for (int i = 0; i < contour_count; i++) {
-		int contour_end = texelFetch(contour_data, i, 0).r;
+		int contour_end = texelFetch(contour_data, contour_offset + i, 0).r;
 		int point_count = contour_end - contour_start;
 		for (int j = 0; j < point_count; j += 2) {
-			vec2 p0 = texelFetch(point_data, contour_start + (j + 0),               0).rg;
-			vec2 p1 = texelFetch(point_data, contour_start + (j + 1) % point_count, 0).rg;
-			vec2 p2 = texelFetch(point_data, contour_start + (j + 2) % point_count, 0).rg;
+			int base = point_offset + contour_start;
+			vec2 p0 = texelFetch(point_data, base + (j + 0),               0).rg;
+			vec2 p1 = texelFetch(point_data, base + (j + 1) % point_count, 0).rg;
+			vec2 p2 = texelFetch(point_data, base + (j + 2) % point_count, 0).rg;
 
 			p0 -= pos;
 			p1 -= pos;
@@ -60,13 +63,30 @@ void main()
 					coverage -= clamp(x2 * pixels_per_em.x + 0.5, 0.0, 1.0);
 				}
 			}
+
+#if 1
+			float r = 0.02;
+			if (length(p1) < r) {
+				frag_color = vec4(1, 0, 0, 1);
+				if (j == 0) {
+					frag_color = vec4(1, 0, 1, 1);
+				}
+			}
+
+			if (length(p0) < r) {
+				frag_color = vec4(0, 1, 0, 1);
+				if (j == 0) {
+					frag_color = vec4(0, 0, 1, 1);
+				}
+			}
+#endif
 		}
 
 		contour_start = contour_end;
 	}
 
-	vec4 vcolor = vec4(0.0, 1.0, 1.0, 1.0);
-	coverage = sqrt(clamp(abs(coverage) * 0.5, 0.0, 1.0));
+	vec4 vcolor = vec4(1.0);
+	//coverage = sqrt(clamp(abs(coverage) * 0.5, 0.0, 1.0));
 	float alpha = coverage * vcolor.w;
 	frag_color = vec4(vcolor.xyz * alpha, alpha);
 }
