@@ -692,14 +692,15 @@ int main(void)
 		glViewport(0, 0, viewport_width, viewport_height);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-		float size = 1024.f;
-		uint32_t index_a = get_glyph_index(&font, 'A');
-		uint32_t index_b = get_glyph_index(&font, 'B');
+		float size = 128.0f;
+		uint32_t index_a = get_glyph_index(&font, 'H');
+		uint32_t index_b = get_glyph_index(&font, 'i');
 		glyph_instance instance_data[2] = {0};
 		instance_data[0] = instances[index_a];
 		instance_data[0].size[0] *= size / viewport_width;
 		instance_data[0].size[1] *= size / viewport_height;
 		instance_data[1] = instances[index_b];
+		instance_data[1].pos[0] = instance_data[0].size[0];
 		instance_data[1].size[0] *= size / viewport_width;
 		instance_data[1].size[1] *= size / viewport_height;
 		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instance_data), instance_data);
