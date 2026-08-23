@@ -1,8 +1,12 @@
 #define GLFW_INCLUDE_NONE
 #include <assert.h>
+#include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <GLFW/glfw3.h>
+#include <string.h>
+#include <CoreText/CoreText.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <CoreFoundation/CoreFoundation.h>
 
 #define GLAD_GL_IMPLEMENTATION
 #include "glad.h"
@@ -518,17 +522,17 @@ int main(void)
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+	reader r = {0};
+	r.input = read_file("fonts/OpenSans-Regular.ttf");
+	if (!r.input.at) {
+		return -1;
+	}
+
 	otf_font font = {0};
 	glyph *glyphs = NULL;
 	glyph_instance *instances = NULL;
 	GLuint point_texture, contour_texture;
 	{
-		reader r = {0};
-		r.input = read_file("fonts/OpenSans-Regular.ttf");
-		if (!r.input.at) {
-			return -1;
-		}
-
 		uint32_t _version = read_u32(&r);
 		uint16_t num_tables = read_u16(&r);
 		uint16_t _search_range = read_u16(&r);
@@ -594,15 +598,22 @@ int main(void)
 		uint32_t _maxp_version = read_u32(&maxp);
 		font.glyph_count = read_u16(&maxp);
 
+		// convert the glyphs
 		uint32_t point_count = 0;
 		uint32_t contour_count = 0;
 		glyphs = calloc(font.glyph_count, sizeof(*glyphs));
 		instances = calloc(font.glyph_count, sizeof(*instances));
 		for (uint32_t i = 0; i < font.glyph_count; i++) {
+			if (i == 3) {
+				printf("point_offset=%d, contour_offset=%d, contour_count=%d\n", point_count, contour_count, glyphs[i].contour_count);;
+			}
+
 			glyphs[i] = convert_glyph(&font, i);
 			instances[i].point_offset = point_count;
 			instances[i].contour_offset = contour_count;
 			instances[i].contour_count = glyphs[i].contour_count;
+			instances[i].pos[0] = (float)glyphs[i].x_min / font.units_per_em;
+			instances[i].pos[1] = (float)glyphs[i].y_min / font.units_per_em;
 			instances[i].size[0] = (float)(glyphs[i].x_max - glyphs[i].x_min) / font.units_per_em;
 			instances[i].size[1] = (float)(glyphs[i].y_max - glyphs[i].y_min) / font.units_per_em;
 			point_count += glyphs[i].point_count;
@@ -692,30 +703,54 @@ int main(void)
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
 
+	float font_size = 128.0f;
+    CFDataRef data = CFDataCreate(NULL, (uint8_t *)r.input.at, r.input.length);
+    CTFontDescriptorRef descriptor = CTFontManagerCreateFontDescriptorFromData(data);
+    CTFontRef font_ref = CTFontCreateWithFontDescriptor(descriptor, font_size, NULL);
+
+    CFStringRef text = CFSTR("Hello, world!");
+    CFMutableAttributedStringRef string =
+        CFAttributedStringCreateMutable(NULL, 0);
+    CFAttributedStringReplaceString(string, CFRangeMake(0, 0), text);
+    CFAttributedStringSetAttribute(string,
+		CFRangeMake(0, CFStringGetLength(text)),
+        kCTFontAttributeName, font_ref);
+
+    CTLineRef line = CTLineCreateWithAttributedString(string);
+    CFArrayRef runs = CTLineGetGlyphRuns(line);
+
 	while (!glfwWindowShouldClose(window)) {
 		int viewport_width, viewport_height;
 		glfwGetFramebufferSize(window, &viewport_width, &viewport_height);
 		glViewport(0, 0, viewport_width, viewport_height);
 		glClear(GL_COLOR_BUFFER_BIT);
 
-		float size = 128.0f;
-		uint32_t index_a = get_glyph_index(&font, 'H');
-		uint32_t index_b = get_glyph_index(&font, 'i');
-		glyph_instance instance_data[2] = {0};
-		instance_data[0] = instances[index_a];
-		instance_data[0].size[0] *= size / viewport_width;
-		instance_data[0].size[1] *= size / viewport_height;
-		instance_data[1] = instances[index_b];
-		instance_data[1].pos[0] = instance_data[0].size[0];
-		instance_data[1].size[0] *= size / viewport_width;
-		instance_data[1].size[1] *= size / viewport_height;
+		float pos[2] = {0};
+		uint32_t instance_count = 0;
+		glyph_instance instance_data[64] = {0};
+		for (CFIndex i = 0; i < CFArrayGetCount(runs); i++) {
+			CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs, i);
+			CFIndex glyph_count = CTRunGetGlyphCount(run);
+			const CGGlyph *glyphs = CTRunGetGlyphsPtr(run);
+			const CGPoint *positions = CTRunGetPositionsPtr(run);
+			for (CFIndex j = 0; j < glyph_count; j++) {
+				CGGlyph glyph_index = glyphs[j];
+				glyph_instance *inst = &instance_data[instance_count++];
+				*inst = instances[glyph_index];
+				inst->pos[0] = (inst->pos[0] * font_size + positions[j].x) / viewport_width;
+				inst->pos[1] = (inst->pos[1] * font_size + positions[j].y) / viewport_height;
+				inst->size[0] *= font_size / viewport_width;
+				inst->size[1] *= font_size / viewport_height;
+			}
+		}
+
 		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instance_data), instance_data);
 
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
 		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
-		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, LENGTH(instance_data));
+		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, instance_count);
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
