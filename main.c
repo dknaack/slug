@@ -253,15 +253,17 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 	reader loca;
 	loca.input = font->tables[OTF_TABLE_LOCA];
 	loca.pos = glyph_index;
+	assert(glyph_index < font->glyph_count);
 
-	uint32_t offset = 0;
+	uint32_t offset, next_offset;
 	if (font->index_to_loc_format == 0) {
 		loca.pos = sizeof(uint16_t) * glyph_index;
-		uint16_t offset_divided_by_two = read_u16(&loca);
-		offset = offset_divided_by_two * 2;
+		offset = 2 * read_u16(&loca);
+		next_offset = 2 * read_u16(&loca);
 	} else {
 		loca.pos = sizeof(uint32_t) * glyph_index;
 		offset = read_u32(&loca);
+		next_offset = read_u32(&loca);
 	}
 
 	// Convert the glyph
@@ -269,8 +271,12 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 	glyf.input = font->tables[OTF_TABLE_GLYF];
 	glyf.pos = offset;
 
-	int16_t contour_count = read_u16(&glyf);
-	if (contour_count >= 0) {
+	int16_t contour_count = 0;
+	if (offset != next_offset) {
+		contour_count = read_u16(&glyf);
+	}
+
+	if (contour_count > 0) {
 		// Simple glyph
 		result.x_min = read_i16(&glyf);
 		result.y_min = read_i16(&glyf);
@@ -385,7 +391,7 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 
 		assert(result.point_count % 2 == 0);
 		result.points = realloc(result.points, result.point_count * sizeof(*result.points));
-	} else {
+	} else if (contour_count < 0) {
 		// Composite glyph
 		result.x_min = read_i16(&glyf);
 		result.y_min = read_i16(&glyf);
