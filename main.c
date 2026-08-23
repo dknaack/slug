@@ -488,28 +488,6 @@ static GLuint create_shader(const char *src, GLenum type)
 	return shader;
 }
 
-static glyph_instance instance_from_glyph(uint32_t glyph_index, glyph *glyphs, uint32_t *offsets, otf_font font,
-	float viewport_width, float viewport_height)
-{
-	glyph glyph = glyphs[glyph_index];
-
-	float size = 1024.f;
-	float width = (float)(glyph.x_max - glyph.x_min) / font.units_per_em;
-	float height = (float)(glyph.y_max - glyph.y_min) / font.units_per_em;
-	width *= size / viewport_width;
-	height *= size / viewport_height;
-
-	glyph_instance result = {0};
-	result.pos[0] = -width/2;
-	result.pos[1] = -height/2;
-	result.size[0] = width;
-	result.size[1] = height;
-	result.point_offset = offsets[2 * glyph_index + 0];
-	result.contour_offset = offsets[2 * glyph_index + 1];
-	result.contour_count = glyph.contour_count;
-	return result;
-}
-
 int main(void)
 {
 	if (!glfwInit()) {
@@ -536,10 +514,8 @@ int main(void)
 
 	otf_font font = {0};
 	glyph *glyphs = NULL;
-	uint32_t *offsets = NULL;
-	uint32_t point_count = 0;
-	uint32_t max_point_count = 0;
-	uint32_t contour_count = 0;
+	glyph_instance *instances = NULL;
+	GLuint point_texture, contour_texture;
 	{
 		reader r = {0};
 		r.input = read_file("fonts/OpenSans-Regular.ttf");
@@ -587,99 +563,74 @@ int main(void)
 		}
 
 		// read the head table
-		{
-			reader head = {font.tables[OTF_TABLE_HEAD]};
-			uint16_t _major_version = read_u16(&head);
-			uint16_t _minor_version = read_u16(&head);
-			uint32_t _font_revision = read_u32(&head);
-			uint32_t _checksum_adjustment = read_u32(&head);
-			uint32_t _magic_number = read_u32(&head);
-			uint16_t _flags = read_u16(&head);
-			font.units_per_em = read_u16(&head);
-			int64_t _created = read_u64(&head);
-			int64_t _modified = read_u64(&head);
-			int16_t _x_min = read_u16(&head);
-			int16_t _y_min = read_u16(&head);
-			int16_t _x_max = read_u16(&head);
-			int16_t _y_max = read_u16(&head);
-			uint16_t _mac_style = read_u16(&head);
-			uint16_t _lowest_rec_ppem = read_u16(&head);
-			int16_t _font_direction_hint = read_u16(&head);
-			font.index_to_loc_format = read_u16(&head);
-			int16_t _glyph_data_format = read_u16(&head);
-		}
+		reader head = {font.tables[OTF_TABLE_HEAD]};
+		uint16_t _major_version = read_u16(&head);
+		uint16_t _minor_version = read_u16(&head);
+		uint32_t _font_revision = read_u32(&head);
+		uint32_t _checksum_adjustment = read_u32(&head);
+		uint32_t _magic_number = read_u32(&head);
+		uint16_t _flags = read_u16(&head);
+		font.units_per_em = read_u16(&head);
+		int64_t _created = read_u64(&head);
+		int64_t _modified = read_u64(&head);
+		int16_t _x_min = read_u16(&head);
+		int16_t _y_min = read_u16(&head);
+		int16_t _x_max = read_u16(&head);
+		int16_t _y_max = read_u16(&head);
+		uint16_t _mac_style = read_u16(&head);
+		uint16_t _lowest_rec_ppem = read_u16(&head);
+		int16_t _font_direction_hint = read_u16(&head);
+		font.index_to_loc_format = read_u16(&head);
+		int16_t _glyph_data_format = read_u16(&head);
 
 		// read the maxp table
-		{
-			reader maxp = {font.tables[OTF_TABLE_MAXP]};
-			uint32_t _version = read_u32(&maxp);
-			font.glyph_count = read_u16(&maxp);
-		}
+		reader maxp = {font.tables[OTF_TABLE_MAXP]};
+		uint32_t _maxp_version = read_u32(&maxp);
+		font.glyph_count = read_u16(&maxp);
 
+		uint32_t point_count = 0;
+		uint32_t contour_count = 0;
 		glyphs = calloc(font.glyph_count, sizeof(*glyphs));
-		offsets = calloc(2 * font.glyph_count, sizeof(*offsets));
+		instances = calloc(font.glyph_count, sizeof(*instances));
 		for (uint32_t i = 0; i < font.glyph_count; i++) {
 			glyphs[i] = convert_glyph(&font, i);
-			offsets[2 * i + 0] = point_count;
-			offsets[2 * i + 1] = contour_count;
+			instances[i].point_offset = point_count;
+			instances[i].contour_offset = contour_count;
+			instances[i].contour_count = glyphs[i].contour_count;
+			instances[i].size[0] = (float)(glyphs[i].x_max - glyphs[i].x_min) / font.units_per_em;
+			instances[i].size[1] = (float)(glyphs[i].y_max - glyphs[i].y_min) / font.units_per_em;
 			point_count += glyphs[i].point_count;
-			max_point_count = MAX(max_point_count, glyphs[i].point_count);
 			contour_count += glyphs[i].contour_count;
 		}
+
+		GLuint point_buffer;
+		glGenBuffers(1, &point_buffer);
+		glBindBuffer(GL_TEXTURE_BUFFER, point_buffer);
+		glBufferData(GL_TEXTURE_BUFFER, point_count * sizeof(point), NULL, GL_STATIC_DRAW);
+		for (uint32_t i = 0; i < font.glyph_count; i++) {
+			size_t offset = instances[i].point_offset * sizeof(point);
+			size_t size = glyphs[i].point_count * sizeof(point);
+			glBufferSubData(GL_TEXTURE_BUFFER, offset, size, glyphs[i].points);
+		}
+
+		glGenTextures(1, &point_texture);
+		glBindTexture(GL_TEXTURE_BUFFER, point_texture);
+		glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, point_buffer);
+
+		GLuint contour_buffer;
+		glGenBuffers(1, &contour_buffer);
+		glBindBuffer(GL_TEXTURE_BUFFER, contour_buffer);
+		glBufferData(GL_TEXTURE_BUFFER, contour_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
+		for (uint32_t i = 0; i < font.glyph_count; i++) {
+			size_t offset = instances[i].contour_offset * sizeof(uint32_t);
+			size_t size = glyphs[i].contour_count * sizeof(uint32_t);
+			glBufferSubData(GL_TEXTURE_BUFFER, offset, size, glyphs[i].contours);
+		}
+
+		glGenTextures(1, &contour_texture);
+		glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
+		glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, contour_buffer);
 	}
-
-	str vertex_shader_source = read_file("vert.glsl");
-	str fragment_shader_source = read_file("frag.glsl");
-	GLuint vertex_shader = create_shader(vertex_shader_source.at, GL_VERTEX_SHADER);
-	GLuint fragment_shader = create_shader(fragment_shader_source.at, GL_FRAGMENT_SHADER);
-
-	GLuint program = glCreateProgram();
-	glAttachShader(program, vertex_shader);
-	glAttachShader(program, fragment_shader);
-	glLinkProgram(program);
-
-	int success = 0;
-	glGetProgramiv(program, GL_LINK_STATUS, &success);
-	if (!success) {
-		char info_log[1024] = {0};
-		glGetProgramInfoLog(program, sizeof(info_log) - 1, NULL, info_log);
-		printf("Failed to compile shader: %s\n", info_log);
-		return -1;
-	}
-
-	glUseProgram(program);
-	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
-	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
-
-	GLuint point_buffer;
-	glGenBuffers(1, &point_buffer);
-	glBindBuffer(GL_TEXTURE_BUFFER, point_buffer);
-	glBufferData(GL_TEXTURE_BUFFER, point_count * sizeof(point), NULL, GL_STATIC_DRAW);
-	for (uint32_t i = 0; i < font.glyph_count; i++) {
-		glBufferSubData(GL_TEXTURE_BUFFER,
-			offsets[2 * i] * sizeof(point),
-			glyphs[i].point_count * sizeof(point),
-			glyphs[i].points);
-	}
-
-	GLuint point_texture;
-	glGenTextures(1, &point_texture);
-	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, point_buffer);
-
-	GLuint contour_buffer;
-	glGenBuffers(1, &contour_buffer);
-	glBindBuffer(GL_TEXTURE_BUFFER, contour_buffer);
-	glBufferData(GL_TEXTURE_BUFFER, contour_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
-	for (uint32_t i = 0; i < font.glyph_count; i++) {
-		glBufferSubData(GL_TEXTURE_BUFFER, offsets[2 * i + 1] * sizeof(uint32_t),
-			glyphs[i].contour_count * sizeof(uint32_t), glyphs[i].contours);
-	}
-
-	GLuint contour_texture;
-	glGenTextures(1, &contour_texture);
-	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
-	glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, contour_buffer);
 
 	GLuint vertex_array;
 	glGenVertexArrays(1, &vertex_array);
@@ -706,6 +657,29 @@ int main(void)
 	glEnableVertexAttribArray(4);
 	glVertexAttribDivisor(4, 1);
 
+	str vertex_shader_source = read_file("vert.glsl");
+	str fragment_shader_source = read_file("frag.glsl");
+	GLuint vertex_shader = create_shader(vertex_shader_source.at, GL_VERTEX_SHADER);
+	GLuint fragment_shader = create_shader(fragment_shader_source.at, GL_FRAGMENT_SHADER);
+
+	GLuint program = glCreateProgram();
+	glAttachShader(program, vertex_shader);
+	glAttachShader(program, fragment_shader);
+	glLinkProgram(program);
+
+	int success = 0;
+	glGetProgramiv(program, GL_LINK_STATUS, &success);
+	if (!success) {
+		char info_log[1024] = {0};
+		glGetProgramInfoLog(program, sizeof(info_log) - 1, NULL, info_log);
+		printf("Failed to compile shader: %s\n", info_log);
+		return -1;
+	}
+
+	glUseProgram(program);
+	glUniform1i(glGetUniformLocation(program, "point_data"), 0);
+	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
+
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
 
@@ -718,18 +692,23 @@ int main(void)
 		glViewport(0, 0, viewport_width, viewport_height);
 		glClear(GL_COLOR_BUFFER_BIT);
 
+		float size = 1024.f;
 		uint32_t index_a = get_glyph_index(&font, 'A');
 		uint32_t index_b = get_glyph_index(&font, 'B');
-		glyph_instance instances[2] = {0};
-		instances[0] = instance_from_glyph(index_a, glyphs, offsets, font, viewport_width, viewport_height);
-		instances[1] = instance_from_glyph(index_b, glyphs, offsets, font, viewport_width, viewport_height);
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instances), instances);
+		glyph_instance instance_data[2] = {0};
+		instance_data[0] = instances[index_a];
+		instance_data[0].size[0] *= size / viewport_width;
+		instance_data[0].size[1] *= size / viewport_height;
+		instance_data[1] = instances[index_b];
+		instance_data[1].size[0] *= size / viewport_width;
+		instance_data[1].size[1] *= size / viewport_height;
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instance_data), instance_data);
 
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
 		glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
-		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, LENGTH(instances));
+		glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, LENGTH(instance_data));
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();
