@@ -33,6 +33,7 @@ typedef struct {
 
 typedef enum {
 	OTF_TABLE_NONE,
+	OTF_TABLE_CFF,
 	OTF_TABLE_CMAP,
 	OTF_TABLE_GLYF,
 	OTF_TABLE_HEAD,
@@ -85,14 +86,8 @@ typedef struct {
 	float x, y;
 } point;
 
-typedef struct {
-	point *points;
-	uint32_t *contours;
-	uint32_t contour_count;
-	uint32_t point_count;
-	int32_t x_min, y_min;
-	int32_t x_max, y_max;
-} glyph;
+#define MAX_POINT_COUNT (256 * 256)
+#define MAX_CONTOUR_COUNT (64 * 64)
 
 typedef struct {
 	float pos[2];
@@ -100,7 +95,17 @@ typedef struct {
 	uint32_t point_offset;
 	uint32_t contour_offset;
 	uint32_t contour_count;
-} glyph_instance;
+} glyph;
+
+typedef struct {
+	point points[MAX_POINT_COUNT];
+	uint32_t contours[MAX_CONTOUR_COUNT];
+	glyph *glyphs;
+
+	uint32_t point_count;
+	uint32_t contour_count;
+	uint32_t glyph_count;
+} glyph_storage;
 
 static str read_file(char *path)
 {
@@ -155,7 +160,7 @@ static uint16_t read_u16(reader *r)
 	return result;
 }
 
-static uint16_t read_u8(reader *r)
+static uint8_t read_u8(reader *r)
 {
 	uint8_t *p = (uint8_t *)r->input.at;
 	uint16_t result = p[r->pos++];
@@ -249,7 +254,7 @@ static uint32_t get_glyph_index(otf_font *font, uint32_t codepoint)
 	return result;
 }
 
-static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
+static glyph convert_glyph(glyph_storage *out, otf_font *font, uint32_t glyph_index)
 {
 	glyph result = {0};
 
@@ -282,10 +287,10 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 
 	if (contour_count > 0) {
 		// Simple glyph
-		result.x_min = read_i16(&glyf);
-		result.y_min = read_i16(&glyf);
-		result.x_max = read_i16(&glyf);
-		result.y_max = read_i16(&glyf);
+		int16_t x_min = read_i16(&glyf);
+		int16_t y_min = read_i16(&glyf);
+		int16_t x_max = read_i16(&glyf);
+		int16_t y_max = read_i16(&glyf);
 
 		uint16_t *end_points = calloc(contour_count, sizeof(*end_points));
 		for (uint16_t i = 0; i < contour_count; i++) {
@@ -313,7 +318,7 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 			}
 		}
 
-		point *points = calloc(point_count, sizeof(*points));
+		point points[1024] = {0};
 
 		// Decode x-coordinates
 		int16_t x = 0;
@@ -330,7 +335,7 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 				x += read_i16(&glyf);
 			}
 
-			points[i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
+			points[i].x = (float)(x - x_min) / (float)(x_max - x_min);
 		}
 
 		// Decode y-coordinates
@@ -350,16 +355,23 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 				y += read_i16(&glyf);
 			}
 
-			points[i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
+			points[i].y = (float)(y - y_min) / (float)(y_max - y_min);
 		}
 
-		// Insert midpoints
-		result.points = calloc(2 * point_count, sizeof(*result.points));
-		result.contours = calloc(contour_count, sizeof(*result.contours));
+		result.pos[0] = x_min;
+		result.pos[1] = y_min;
+		result.size[0] = x_max - x_min;
+		result.size[1] = y_max - y_min;
+		result.contour_offset = out->contour_count;
 		result.contour_count = contour_count;
-		result.point_count = 0;
+		result.point_offset = out->point_count;
 
+		// Insert midpoints
+		point *out_points = out->points + out->point_count;
+		uint32_t *out_contours = out->contours + out->contour_count;
+		uint32_t out_point_count = 0;
 		uint32_t contour_start = 0;
+
 		for (uint16_t j = 0; j < contour_count; j++) {
 			uint16_t contour_end = end_points[j];
 			point prev_point = points[contour_end];
@@ -367,7 +379,8 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 
 			// Ensure that first point is always on the curve
 			if (prev_flag & OTF_ON_CURVE_POINT) {
-				result.points[result.point_count++] = prev_point;
+				out_points[out_point_count++] = prev_point;
+				assert(out->point_count + out_point_count <= MAX_POINT_COUNT);
 			}
 
 			for (uint16_t i = contour_start; i <= contour_end; i++) {
@@ -377,12 +390,14 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 					point midpoint = {0};
 					midpoint.x = (prev_point.x + curr_point.x) / 2;
 					midpoint.y = (prev_point.y + curr_point.y) / 2;
-					result.points[result.point_count++] = midpoint;
+					out_points[out_point_count++] = midpoint;
+					assert(out->point_count + out_point_count <= MAX_POINT_COUNT);
 				}
 
 				if (!(i == contour_end && (curr_flag & OTF_ON_CURVE_POINT))) {
-					assert(result.point_count < 2 * point_count);
-					result.points[result.point_count++] = curr_point;
+					assert(out_point_count < 2 * point_count);
+					out_points[out_point_count++] = curr_point;
+					assert(out->point_count + out_point_count <= MAX_POINT_COUNT);
 				}
 
 				prev_point = curr_point;
@@ -390,23 +405,40 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 			}
 
 			contour_start = contour_end + 1;
-			result.contours[j] = result.point_count;
+			out_contours[j] = out_point_count;
 		}
 
-		assert(result.point_count % 2 == 0);
-		result.points = realloc(result.points, result.point_count * sizeof(*result.points));
+		out->contour_count += contour_count;
+		out->point_count += out_point_count;
+		assert(out_point_count % 2 == 0);
 	} else if (contour_count < 0) {
 		// Composite glyph
-		result.x_min = read_i16(&glyf);
-		result.y_min = read_i16(&glyf);
-		result.x_max = read_i16(&glyf);
-		result.y_max = read_i16(&glyf);
+		int16_t x_min = read_i16(&glyf);
+		int16_t y_min = read_i16(&glyf);
+		int16_t x_max = read_i16(&glyf);
+		int16_t y_max = read_i16(&glyf);
+
+		result.pos[0] = x_min;
+		result.pos[1] = y_min;
+		result.size[0] = x_max - x_min;
+		result.size[1] = y_max - y_min;
+
+		result.point_offset = out->point_count;
+		result.contour_offset = out->contour_count;
 
 		uint16_t flags = 0;
 		do {
 			flags = read_u16(&glyf);
 			uint16_t component_index = read_u16(&glyf);
-			glyph component = convert_glyph(font, component_index);
+
+			/*
+			 * Decode the component directly into the output buffers.
+			 * Save where it starts so we can transform it below.
+			 */
+			uint32_t point_offset = out->point_count;
+			uint32_t contour_offset = out->contour_count;
+
+			glyph component = convert_glyph(out, font, component_index);
 
 			int16_t arg1, arg2;
 			if (flags & OTF_ARG_1_AND_2_ARE_WORDS) {
@@ -417,7 +449,10 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 				arg2 = read_i8(&glyf);
 			}
 
-			otf_transform t = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+			otf_transform t = {
+				1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f
+			};
+
 			if (flags & OTF_WE_HAVE_A_SCALE) {
 				t.xx = t.yy = fixed_2_14(read_i16(&glyf));
 			} else if (flags & OTF_WE_HAVE_AN_X_AND_Y_SCALE) {
@@ -430,51 +465,45 @@ static glyph convert_glyph(otf_font *font, uint32_t glyph_index)
 				t.yy = fixed_2_14(read_i16(&glyf));
 			}
 
-			float dx = 0;
-			float dy = 0;
 			if (flags & OTF_ARGS_ARE_XY_VALUES) {
 				t.dx = arg1;
 				t.dy = arg2;
 			} else {
-				point p = component.points[arg1];
-				point q = component.points[arg2];
+				point p = out->points[point_offset + arg1];
+				point q = out->points[point_offset + arg2];
 
-				float px = p.x * (result.x_max - result.x_min) + result.x_min;
-				float py = p.y * (result.y_max - result.y_min) + result.y_min;
+				float px = p.x * component.size[0] + component.pos[0];
+				float py = p.y * component.size[1] + component.pos[1];
 
-				float qx = q.x * (component.x_max - component.x_min) + component.x_min;
-				float qy = q.y * (component.y_max - component.y_min) + component.y_min;
+				float qx = q.x * component.size[0] + component.pos[0];
+				float qy = q.y * component.size[1] + component.pos[1];
 
 				t.dx = px - (t.xx * qx + t.xy * qy);
 				t.dy = py - (t.yx * qx + t.yy * qy);
 			}
 
-			// Append the glyph
-			uint32_t point_count = result.point_count + component.point_count;
-			uint32_t contour_count = result.contour_count + component.contour_count;
-			result.points = realloc(result.points, point_count * sizeof(*result.points));
-			result.contours = realloc(result.contours, contour_count * sizeof(*result.contours));
+			// Transform the component in place
+			uint32_t component_point_count = out->point_count - point_offset;
+			for (uint32_t i = 0; i < component_point_count; i++) {
+				point *p = &out->points[point_offset + i];
 
-			uint32_t point_offset = result.point_count;
-			uint32_t contour_offset = result.contour_count;
-			for (uint32_t i = 0; i < component.point_count; i++) {
-				float x = component.points[i].x * (component.x_max - component.x_min) + component.x_min;
-				float y = component.points[i].y * (component.y_max - component.y_min) + component.y_min;
+				float x = p->x * component.size[0] + component.pos[0];
+				float y = p->y * component.size[1] + component.pos[1];
 
 				x = t.xx * x + t.xy * y + t.dx;
 				y = t.yx * x + t.yy * y + t.dy;
 
-				result.points[point_offset + i].x = (float)(x - result.x_min) / (float)(result.x_max - result.x_min);
-				result.points[point_offset + i].y = (float)(y - result.y_min) / (float)(result.y_max - result.y_min);
+				p->x = (x - x_min) / (float)(x_max - x_min);
+				p->y = (y - y_min) / (float)(y_max - y_min);
 			}
 
+			// Adjust contour offsets in place.
 			for (uint32_t i = 0; i < component.contour_count; i++) {
-				result.contours[contour_offset + i] = point_offset + component.contours[i];
+				out->contours[contour_offset + i] += point_offset;
 			}
-
-			result.point_count += component.point_count;
-			result.contour_count += component.contour_count;
 		} while (flags & OTF_MORE_COMPONENTS);
+
+		result.contour_count = out->contour_count - result.contour_offset;
 	}
 
 	return result;
@@ -491,7 +520,7 @@ static GLuint create_shader(const char *src, GLenum type)
 	if (!success) {
 		char info_log[1024] = {0};
 		glGetShaderInfoLog(shader, sizeof(info_log) - 1, NULL, info_log);
-		printf("Failed to compile shader: %s\n", info_log);
+		fprintf(stderr, "Failed to compile shader: %s\n", info_log);
 		return 0;
 	}
 
@@ -523,14 +552,14 @@ int main(void)
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	reader r = {0};
-	r.input = read_file("fonts/OpenSans-Regular.ttf");
+	r.input = read_file("fonts/latinmodern-math.otf");
 	if (!r.input.at) {
 		return -1;
 	}
 
 	otf_font font = {0};
-	glyph *glyphs = NULL;
-	glyph_instance *instances = NULL;
+	glyph *instances = NULL;
+	glyph_storage storage = {0};
 	GLuint point_texture, contour_texture;
 	{
 		uint32_t _version = read_u32(&r);
@@ -540,12 +569,16 @@ int main(void)
 		uint16_t _range_shift = read_u16(&r);
 
 		for (uint16_t i = 0; i < num_tables; i++) {
+			printf("%.4s\n", r.input.at + r.pos);
 			uint32_t tag = read_u32(&r);
 			uint32_t _checksum = read_u32(&r);
 			uint32_t offset = read_u32(&r);
 			uint32_t length = read_u32(&r);
 
 			switch (tag) {
+			case TAG('C', 'F', 'F', ' '):
+				tag = OTF_TABLE_CFF;
+				break;
 			case TAG('c', 'm', 'a', 'p'):
 				tag = OTF_TABLE_CMAP;
 				break;
@@ -599,54 +632,26 @@ int main(void)
 		font.glyph_count = read_u16(&maxp);
 
 		// convert the glyphs
-		uint32_t point_count = 0;
-		uint32_t contour_count = 0;
-		glyphs = calloc(font.glyph_count, sizeof(*glyphs));
-		instances = calloc(font.glyph_count, sizeof(*instances));
+		storage.glyphs = calloc(font.glyph_count, sizeof(*storage.glyphs));
 		for (uint32_t i = 0; i < font.glyph_count; i++) {
-			if (i == 3) {
-				printf("point_offset=%d, contour_offset=%d, contour_count=%d\n", point_count, contour_count, glyphs[i].contour_count);;
-			}
-
-			glyphs[i] = convert_glyph(&font, i);
-			instances[i].point_offset = point_count;
-			instances[i].contour_offset = contour_count;
-			instances[i].contour_count = glyphs[i].contour_count;
-			instances[i].pos[0] = (float)glyphs[i].x_min / font.units_per_em;
-			instances[i].pos[1] = (float)glyphs[i].y_min / font.units_per_em;
-			instances[i].size[0] = (float)(glyphs[i].x_max - glyphs[i].x_min) / font.units_per_em;
-			instances[i].size[1] = (float)(glyphs[i].y_max - glyphs[i].y_min) / font.units_per_em;
-			point_count += glyphs[i].point_count;
-			contour_count += glyphs[i].contour_count;
-		}
-
-		GLuint point_buffer;
-		glGenBuffers(1, &point_buffer);
-		glBindBuffer(GL_TEXTURE_BUFFER, point_buffer);
-		glBufferData(GL_TEXTURE_BUFFER, point_count * sizeof(point), NULL, GL_STATIC_DRAW);
-		for (uint32_t i = 0; i < font.glyph_count; i++) {
-			size_t offset = instances[i].point_offset * sizeof(point);
-			size_t size = glyphs[i].point_count * sizeof(point);
-			glBufferSubData(GL_TEXTURE_BUFFER, offset, size, glyphs[i].points);
+			storage.glyphs[i] = convert_glyph(&storage, &font, i);
+			storage.glyphs[i].pos[0] /= font.units_per_em;
+			storage.glyphs[i].pos[1] /= font.units_per_em;
+			storage.glyphs[i].size[0] /= font.units_per_em;
+			storage.glyphs[i].size[1] /= font.units_per_em;
 		}
 
 		glGenTextures(1, &point_texture);
-		glBindTexture(GL_TEXTURE_BUFFER, point_texture);
-		glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, point_buffer);
-
-		GLuint contour_buffer;
-		glGenBuffers(1, &contour_buffer);
-		glBindBuffer(GL_TEXTURE_BUFFER, contour_buffer);
-		glBufferData(GL_TEXTURE_BUFFER, contour_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
-		for (uint32_t i = 0; i < font.glyph_count; i++) {
-			size_t offset = instances[i].contour_offset * sizeof(uint32_t);
-			size_t size = glyphs[i].contour_count * sizeof(uint32_t);
-			glBufferSubData(GL_TEXTURE_BUFFER, offset, size, glyphs[i].contours);
-		}
+		glBindTexture(GL_TEXTURE_2D, point_texture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, 256, 256, 0, GL_RG, GL_FLOAT, storage.points);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
 		glGenTextures(1, &contour_texture);
-		glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
-		glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, contour_buffer);
+		glBindTexture(GL_TEXTURE_2D, contour_texture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_R32I, 64, 64, 0, GL_RED_INTEGER, GL_INT, storage.contours);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	}
 
 	GLuint vertex_array;
@@ -656,21 +661,21 @@ int main(void)
 	GLuint instance_buffer;
 	glGenBuffers(1, &instance_buffer);
 	glBindBuffer(GL_ARRAY_BUFFER, instance_buffer);
-	glBufferData(GL_ARRAY_BUFFER, 1024 * sizeof(glyph_instance), NULL, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, 1024 * sizeof(glyph), NULL, GL_DYNAMIC_DRAW);
 
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glyph_instance), (void *)offsetof(glyph_instance, pos));
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glyph), (void *)offsetof(glyph, pos));
 	glEnableVertexAttribArray(0);
 	glVertexAttribDivisor(0, 1);
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(glyph_instance), (void *)offsetof(glyph_instance, size));
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(glyph), (void *)offsetof(glyph, size));
 	glEnableVertexAttribArray(1);
 	glVertexAttribDivisor(1, 1);
-	glVertexAttribIPointer(2, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, point_offset));
+	glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, sizeof(glyph), (void *)offsetof(glyph, point_offset));
 	glEnableVertexAttribArray(2);
 	glVertexAttribDivisor(2, 1);
-	glVertexAttribIPointer(3, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, contour_offset));
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, sizeof(glyph), (void *)offsetof(glyph, contour_offset));
 	glEnableVertexAttribArray(3);
 	glVertexAttribDivisor(3, 1);
-	glVertexAttribIPointer(4, 1, GL_INT, sizeof(glyph_instance), (void *)offsetof(glyph_instance, contour_count));
+	glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(glyph), (void *)offsetof(glyph, contour_count));
 	glEnableVertexAttribArray(4);
 	glVertexAttribDivisor(4, 1);
 
@@ -689,7 +694,7 @@ int main(void)
 	if (!success) {
 		char info_log[1024] = {0};
 		glGetProgramInfoLog(program, sizeof(info_log) - 1, NULL, info_log);
-		printf("Failed to compile shader: %s\n", info_log);
+		fprintf(stderr, "Failed to compile shader: %s\n", info_log);
 		return -1;
 	}
 
@@ -698,26 +703,25 @@ int main(void)
 	glUniform1i(glGetUniformLocation(program, "contour_data"), 1);
 
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_BUFFER, point_texture);
-
+	glBindTexture(GL_TEXTURE_2D, point_texture);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_BUFFER, contour_texture);
+	glBindTexture(GL_TEXTURE_2D, contour_texture);
 
 	float font_size = 128.0f;
-    CFDataRef data = CFDataCreate(NULL, (uint8_t *)r.input.at, r.input.length);
-    CTFontDescriptorRef descriptor = CTFontManagerCreateFontDescriptorFromData(data);
-    CTFontRef font_ref = CTFontCreateWithFontDescriptor(descriptor, font_size, NULL);
+	CFDataRef data = CFDataCreate(NULL, (uint8_t *)r.input.at, r.input.length);
+	CTFontDescriptorRef descriptor = CTFontManagerCreateFontDescriptorFromData(data);
+	CTFontRef font_ref = CTFontCreateWithFontDescriptor(descriptor, font_size, NULL);
 
-    CFStringRef text = CFSTR("Hello, world!");
-    CFMutableAttributedStringRef string =
-        CFAttributedStringCreateMutable(NULL, 0);
-    CFAttributedStringReplaceString(string, CFRangeMake(0, 0), text);
-    CFAttributedStringSetAttribute(string,
+	CFStringRef text = CFSTR("Hello, world!");
+	CFMutableAttributedStringRef string =
+		CFAttributedStringCreateMutable(NULL, 0);
+	CFAttributedStringReplaceString(string, CFRangeMake(0, 0), text);
+	CFAttributedStringSetAttribute(string,
 		CFRangeMake(0, CFStringGetLength(text)),
-        kCTFontAttributeName, font_ref);
+		kCTFontAttributeName, font_ref);
 
-    CTLineRef line = CTLineCreateWithAttributedString(string);
-    CFArrayRef runs = CTLineGetGlyphRuns(line);
+	CTLineRef line = CTLineCreateWithAttributedString(string);
+	CFArrayRef runs = CTLineGetGlyphRuns(line);
 
 	while (!glfwWindowShouldClose(window)) {
 		int viewport_width, viewport_height;
@@ -727,7 +731,7 @@ int main(void)
 
 		float pos[2] = {0};
 		uint32_t instance_count = 0;
-		glyph_instance instance_data[64] = {0};
+		glyph instance_data[64] = {0};
 		for (CFIndex i = 0; i < CFArrayGetCount(runs); i++) {
 			CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs, i);
 			CFIndex glyph_count = CTRunGetGlyphCount(run);
@@ -735,8 +739,9 @@ int main(void)
 			const CGPoint *positions = CTRunGetPositionsPtr(run);
 			for (CFIndex j = 0; j < glyph_count; j++) {
 				CGGlyph glyph_index = glyphs[j];
-				glyph_instance *inst = &instance_data[instance_count++];
-				*inst = instances[glyph_index];
+				glyph *inst = &instance_data[instance_count++];
+				*inst = storage.glyphs[glyph_index];
+
 				inst->pos[0] = (inst->pos[0] * font_size + positions[j].x) / viewport_width;
 				inst->pos[1] = (inst->pos[1] * font_size + positions[j].y) / viewport_height;
 				inst->size[0] *= font_size / viewport_width;
@@ -744,7 +749,7 @@ int main(void)
 			}
 		}
 
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(instance_data), instance_data);
+		glBufferSubData(GL_ARRAY_BUFFER, 0, instance_count * sizeof(*instance_data), instance_data);
 
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "point_data"), 0);
