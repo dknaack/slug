@@ -5,31 +5,41 @@ flat in int frag_contour_count;
 flat in int frag_contour_offset;
 flat in int frag_point_offset;
 
-uniform samplerBuffer point_data;
-uniform isamplerBuffer contour_data;
-
 out vec4 color;
+
+uniform sampler2D point_data;
+uniform isampler2D contour_data;
+
+vec2 get_point(int i)
+{
+	int offset = frag_point_offset + i;
+	vec2 p = texelFetch(point_data, ivec2(offset % 256, offset / 256), 0).rg;
+	vec2 result = p - frag_texcoord;
+	return result;
+}
+
+int get_contour(int i)
+{
+	int offset = frag_contour_offset + i;
+	int result = texelFetch(contour_data, ivec2(offset % 64, offset / 64), 0).r;
+	return result;
+}
 
 void main()
 {
 	const float epsilon = 0.0001;
 
-	vec2 pos = frag_texcoord;
 	float coverage = 0.0;
-	vec2 pixels_per_em = vec2(1.0 / fwidth(pos.x), 1.0 / fwidth(pos.y));
 	int contour_start = 0;
+	vec2 pixels_per_em = vec2(1.0 / fwidth(frag_texcoord.x), 1.0 / fwidth(frag_texcoord.y));
+
 	for (int i = 0; i < frag_contour_count; i++) {
-		int contour_end = texelFetch(contour_data, frag_contour_offset + i).r;
+		int contour_end = get_contour(i);
 		int point_count = contour_end - contour_start;
 		for (int j = 0; j < point_count; j += 2) {
-			int base = frag_point_offset + contour_start;
-			vec2 p0 = texelFetch(point_data, base + (j + 0)).rg;
-			vec2 p1 = texelFetch(point_data, base + (j + 1) % point_count).rg;
-			vec2 p2 = texelFetch(point_data, base + (j + 2) % point_count).rg;
-
-			p0 -= pos;
-			p1 -= pos;
-			p2 -= pos;
+			vec2 p0 = get_point(contour_start + (j + 0));
+			vec2 p1 = get_point(contour_start + (j + 1) % point_count);
+			vec2 p2 = get_point(contour_start + (j + 2) % point_count);
 
 			uint shift = ((p0.y > 0.0) ? 2U : 0U) + ((p1.y > 0.0) ? 4U : 0U) + ((p2.y > 0.0) ? 8U : 0U);
 			uint code = (0x2E74U >> shift) & 3U;
