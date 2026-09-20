@@ -146,6 +146,7 @@ int main(void)
 
 	CTLineRef line = CTLineCreateWithAttributedString(string);
 	CFArrayRef runs = CTLineGetGlyphRuns(line);
+	double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
 
 	while (!glfwWindowShouldClose(window)) {
 		int viewport_width, viewport_height;
@@ -165,7 +166,7 @@ int main(void)
 				glyph *g = &glyphs[glyph_count++];
 				*g = font.glyphs[glyph_index];
 
-				g->pos[0] = (g->pos[0] * font_size + positions[j].x) / viewport_width;
+				g->pos[0] = (g->pos[0] * font_size + positions[j].x - width * 0.5f) / viewport_width;
 				g->pos[1] = (g->pos[1] * font_size + positions[j].y) / viewport_height;
 				g->size[0] *= font_size / viewport_width;
 				g->size[1] *= font_size / viewport_height;
