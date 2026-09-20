@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebGL Example</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="800" height="600"></canvas>
+  <script>
+var Module = {
+  canvas: document.getElementById("canvas")
+}
+
+function resizeCanvas() {
+    const canvas = Module.canvas;
+
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const dpr = window.devicePixelRatio;
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+}
+
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+  </script>
+  <script src="main.js"></script>
+</body>
+</html>

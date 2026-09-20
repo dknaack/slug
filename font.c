@@ -575,7 +575,7 @@ new_font_texture(str font_file)
 
 	glGenTextures(1, &result.point_texture);
 	glBindTexture(GL_TEXTURE_2D, result.point_texture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, 256, 256, 0, GL_RG, GL_FLOAT, storage.points);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, 256, 256, 0, GL_RG, GL_FLOAT, storage.points);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
